@@ -8,8 +8,11 @@ Docstrings have been added, as well as DDIM sampling and a new collection of bet
 import enum
 import math
 
+from einops import rearrange, reduce, repeat
 import numpy as np
 import torch as th
+
+from guided_diffusion.scoring_rules import create_generalized_kernel_score
 
 from .nn import mean_flat
 from .losses import normal_kl, discretized_gaussian_log_likelihood
@@ -93,9 +96,52 @@ class LossType(enum.Enum):
     )  # use raw MSE loss (with RESCALED_KL when learning variances)
     KL = enum.auto()  # use the variational lower-bound
     RESCALED_KL = enum.auto()  # like KL, but rescale to estimate the full VLB
+    DISTRIBUTIONAL = enum.auto()  # use the distributional loss
 
     def is_vb(self):
         return self == LossType.KL or self == LossType.RESCALED_KL
+
+class DispersionLossType(enum.Enum):
+    NONE = enum.auto()  # no dispersion loss
+    INTERACTION = enum.auto()  # interaction-based dispersion loss
+    INFONCE_L2 = enum.auto()  # L2 dispersion loss
+
+    def __str__(self):
+        return self.name.replace("_", " ").title()
+
+class LossWeightingType(enum.Enum):
+    """
+    Different types of loss weighting for the distributional loss.
+    """
+
+    NO_WEIGHTING = enum.auto()  # no weighting
+    KINGMA_SNR = enum.auto()  # weight by log SNR       
+ 
+class LossWeighting:
+    """
+    This only applies to the distributional loss.
+    """
+    
+    def __init__(self, weighting_type):
+        weighting_type = weighting_type.upper()
+        if weighting_type.startswith("KINGMA_SNR"):
+            self.type = LossWeightingType.KINGMA_SNR
+            # Extract parameter if present
+            if len(weighting_type.split("_")) == 3:
+                self.b = float(weighting_type.split("_")[2])
+            elif len(weighting_type.split("_")) == 2:
+                self.b = 0  # default value
+            else:
+                raise ValueError(f"Invalid weighting type format: {weighting_type}")
+        elif weighting_type == "NO_WEIGHTING":
+            self.type = LossWeightingType.NO_WEIGHTING
+        else:
+            raise ValueError(f"Unknown loss weighting type: {weighting_type}")
+            
+    def __eq__(self, other):
+        if isinstance(other, LossWeightingType):
+            return self.type == other
+        return False
 
 
 class GaussianDiffusion:
@@ -123,11 +169,30 @@ class GaussianDiffusion:
         model_var_type,
         loss_type,
         rescale_timesteps=False,
+        distributional_track_terms_regardless_of_lambda=False,
+        distributional_kernel="energy",
+        distributional_lambda=1.0,
+        distributional_lambda_weighting="constant",
+        distributional_population_size=4,
+        distributional_kernel_kwargs={"beta": 1.0},
+        distributional_loss_weighting=LossWeighting("NO_WEIGHTING"),
+        dispersion_loss_type=DispersionLossType.NONE,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
+
+        self.use_distributional = loss_type == LossType.DISTRIBUTIONAL
+        self.distributional_track_terms_regardless_of_lambda = distributional_track_terms_regardless_of_lambda
+        self.distributional_kernel = distributional_kernel
+        self.distributional_lambda = distributional_lambda
+        self.distributional_lambda_weighting = distributional_lambda_weighting
+        self.distributional_population_size = distributional_population_size
+        self.distributional_kernel_kwargs = distributional_kernel_kwargs
+        self.distributional_loss_weighting = distributional_loss_weighting
+        
+        self.dispersion_loss_type = dispersion_loss_type
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -166,6 +231,16 @@ class GaussianDiffusion:
             (1.0 - self.alphas_cumprod_prev)
             * np.sqrt(alphas)
             / (1.0 - self.alphas_cumprod)
+        )
+        
+        self.generalized_kernel_score = create_generalized_kernel_score(    
+            kernel_function=distributional_kernel,
+            lambda_val=distributional_lambda,
+            lambda_weighting_function=distributional_lambda_weighting,
+            population_size=distributional_population_size,
+            kernel_kwargs=distributional_kernel_kwargs,
+            track_terms_regardless_of_lambda=distributional_track_terms_regardless_of_lambda,
+            num_timesteps=self.num_timesteps,
         )
 
     def q_mean_variance(self, x_start, t):
@@ -522,6 +597,8 @@ class GaussianDiffusion:
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
+                if self.use_distributional:
+                    model_kwargs["eps"] = th.randn_like(img)
                 out = self.p_sample(
                     model,
                     img,
@@ -693,6 +770,8 @@ class GaussianDiffusion:
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
+                if self.use_distributional:
+                    model_kwargs["eps"] = th.randn_like(img)
                 out = self.ddim_sample(
                     model,
                     img,
@@ -811,10 +890,115 @@ class GaussianDiffusion:
                 terms["loss"] = terms["mse"] + terms["vb"]
             else:
                 terms["loss"] = terms["mse"]
+        elif self.loss_type == LossType.DISTRIBUTIONAL:
+            # implementing https://arxiv.org/pdf/2502.02483v3#page=31
+            m = self.distributional_population_size
+            x_start_population = repeat(x_start, "n ... -> (n m) ...", m=m)
+            noise_population = repeat(noise, "n ... -> (n m) ...", m=m)
+            x_t_population = repeat(x_t, "n ... -> (n m) ...", m=m)
+            t_population = repeat(t, "n -> (n m)", m=m)
+            eps_population = th.randn_like(x_t_population)
+            
+            if model_kwargs is not None:
+                y = model_kwargs["y"]
+                y_population = repeat(y, "n -> (n m)", m=m)
+            else:
+                y_population = None
+
+            model_output, acts = model(x_t_population, self._scale_timesteps(t_population), y=y_population, eps=eps_population, return_acts=True)
+
+            if self.dispersion_loss_type is not DispersionLossType.NONE:
+                # Calculate the dispersion term.
+                if self.dispersion_loss_type == DispersionLossType.INTERACTION:
+                    raise NotImplementedError("Interaction-based dispersion loss is not implemented.")
+                elif self.dispersion_loss_type == DispersionLossType.INFONCE_L2:
+                    def disp_loss(z): # Dispersive Loss implementation (InfoNCE-L2 variant)
+                        z = z.reshape((z.shape[0],-1)) # flatten
+                        diff = th.nn.functional.pdist(z).pow(2)/z.shape[1] # pairwise distance
+                        diff = th.concat((diff, diff, th.zeros(z.shape[0]).cuda()))  # match JAX implementation of full BxB matrix
+                        return th.log(th.exp(-diff).mean()) # calculate loss
+                        
+                    terms["dispersion"] = disp_loss(acts)
+                        
+                    
+                elif self.dispersion_loss_type == DispersionLossType.MIN:
+                    dispersion = acts.min(dim=0).values
+                else:
+                    raise NotImplementedError(self.dispersion_loss_type)
+                terms["dispersion"] = dispersion
+
+            if self.model_var_type in [
+                ModelVarType.LEARNED,
+                ModelVarType.LEARNED_RANGE,
+            ]:
+                B, C = x_t_population.shape[:2]
+                assert model_output.shape == (B, C * 2, *x_t_population.shape[2:])
+                model_output, model_var_values = th.split(model_output, C, dim=1)
+                # Learn the variance using the variational bound, but don't let
+                # it affect our mean prediction.
+                frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
+                vb_population = self._vb_terms_bpd(
+                    model=lambda *args, r=frozen_out: r,
+                    x_start=x_start_population,
+                    x_t=x_t_population,
+                    t=t_population,
+                    clip_denoised=False,
+                )["output"]
+                vb = rearrange(vb_population, "(n m) ... -> n m ...", m=m)
+                terms["vb"] = reduce(vb, "b m ... -> b", "mean")
+
+            target_population = {
+                ModelMeanType.START_X: x_start_population,
+                ModelMeanType.EPSILON: noise_population,
+            }[self.model_mean_type]
+            
+            x_pred = rearrange(model_output, "(n m) ... -> n m ...", m=m)
+            target = rearrange(target_population, "(n m) ... -> n m ...", m=m)
+            
+            # here we actually calculate the score
+            (
+                score,
+                confinement_term,
+                interaction_term,
+                interaction_term_mult_by_lambda
+            ) = self.generalized_kernel_score(x_pred, target, self._scale_timesteps(t))
+            
+            terms["score"] = score
+            terms["confinement_term"] = confinement_term
+            terms["interaction_term"] = interaction_term
+            terms["interaction_term_mult_by_lambda"] = interaction_term_mult_by_lambda
+            terms["interaction_over_confinement"] = interaction_term / confinement_term
+            
+            if self.distributional_loss_weighting == LossWeightingType.KINGMA_SNR:
+                logsnr = self._calculate_logsnr(t, terms["score"])
+                if self.model_mean_type == ModelMeanType.EPSILON:
+                    logsnr = -logsnr  # flip the sign for epsilon prediction
+                weight = (1 + (self.distributional_loss_weighting.b - logsnr).exp()) ** -1
+                terms["loss"] = -(terms["score"] * weight)
+            else:
+                terms["loss"] = -terms["score"]
+
+            terms["loss"] = terms["loss"] + terms.get("vb", 0)
+            terms["loss"] = terms["loss"] + terms.get("dispersion", 0)
+
         else:
             raise NotImplementedError(self.loss_type)
 
         return terms
+        
+    def _calculate_logsnr(self, t, mse):
+        """
+        Calculate the SNR at a given timestep t.
+
+        :param t: a 1-D Tensor of timesteps.
+        :param mse: the mean squared error at the given timestep, used for shape inference.
+        :return: a tensor of shape [B] with the SNR at each timestep.
+        """
+        # sqrt_alphas_cumprod and sqrt_one_minus_alphas_cumprod are the values used in q_sample
+        # to compute the noisy version x_t of x_start.
+        alpha = _extract_into_tensor(self.sqrt_alphas_cumprod, t, mse.shape) 
+        sigma = _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, mse.shape)
+        return th.log((alpha ** 2 / sigma ** 2).clamp(min=1e-20))
 
     def _prior_bpd(self, x_start):
         """

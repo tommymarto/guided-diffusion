@@ -1,5 +1,6 @@
 import argparse
 import inspect
+import json
 
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
@@ -7,6 +8,19 @@ from .unet import SuperResModel, UNetModel, EncoderUNetModel
 
 NUM_CLASSES = 1000
 
+def seed_everything(seed: int):
+    import random
+    import os
+    import numpy as np
+    import torch
+    
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def diffusion_defaults():
     """
@@ -21,6 +35,17 @@ def diffusion_defaults():
         predict_xstart=False,
         rescale_timesteps=False,
         rescale_learned_sigmas=False,
+        
+        # Distributional loss configuration
+        use_distributional=False,
+        distributional_track_terms_regardless_of_lambda=False, # can be set to False to save memory and compute, True will track all terms even if lambda is 0
+        distributional_kernel="energy",
+        distributional_lambda=1.0,
+        distributional_lambda_weighting="constant",
+        distributional_population_size=4,
+        distributional_kernel_kwargs={"beta": 1.0},
+        distributional_loss_weighting="no_weighting",  # can be "no_weighting" or "kingma_snr"
+        dispersion_loss_type="none"
     )
 
 
@@ -60,6 +85,7 @@ def model_and_diffusion_defaults():
         resblock_updown=False,
         use_fp16=False,
         use_new_attention_order=False,
+        num_classes=NUM_CLASSES,
     )
     res.update(diffusion_defaults())
     return res
@@ -95,6 +121,17 @@ def create_model_and_diffusion(
     resblock_updown,
     use_fp16,
     use_new_attention_order,
+    num_classes,
+    # Distributional loss configuration
+    use_distributional,
+    distributional_track_terms_regardless_of_lambda,
+    distributional_kernel,
+    distributional_lambda,
+    distributional_lambda_weighting,
+    distributional_population_size,
+    distributional_kernel_kwargs,
+    distributional_loss_weighting,
+    dispersion_loss_type
 ):
     model = create_model(
         image_size,
@@ -113,6 +150,8 @@ def create_model_and_diffusion(
         resblock_updown=resblock_updown,
         use_fp16=use_fp16,
         use_new_attention_order=use_new_attention_order,
+        num_classes=num_classes,
+        use_distribuitional=use_distributional,
     )
     diffusion = create_gaussian_diffusion(
         steps=diffusion_steps,
@@ -123,6 +162,15 @@ def create_model_and_diffusion(
         rescale_timesteps=rescale_timesteps,
         rescale_learned_sigmas=rescale_learned_sigmas,
         timestep_respacing=timestep_respacing,
+        use_distributional=use_distributional,
+        distributional_track_terms_regardless_of_lambda=distributional_track_terms_regardless_of_lambda,
+        distributional_kernel=distributional_kernel,
+        distributional_lambda=distributional_lambda,
+        distributional_lambda_weighting=distributional_lambda_weighting,
+        distributional_population_size=distributional_population_size,
+        distributional_kernel_kwargs=distributional_kernel_kwargs,
+        distributional_loss_weighting=distributional_loss_weighting,
+        dispersion_loss_type=dispersion_loss_type,
     )
     return model, diffusion
 
@@ -144,6 +192,8 @@ def create_model(
     resblock_updown=False,
     use_fp16=False,
     use_new_attention_order=False,
+    num_classes=NUM_CLASSES,
+    use_distribuitional=False,
 ):
     if channel_mult == "":
         if image_size == 512:
@@ -154,6 +204,8 @@ def create_model(
             channel_mult = (1, 1, 2, 3, 4)
         elif image_size == 64:
             channel_mult = (1, 2, 3, 4)
+        elif image_size == 32:
+            channel_mult = (1, 2, 2, 2)
         else:
             raise ValueError(f"unsupported image size: {image_size}")
     else:
@@ -165,14 +217,14 @@ def create_model(
 
     return UNetModel(
         image_size=image_size,
-        in_channels=3,
+        in_channels=(3 if not use_distribuitional else 6),  # Adding eps channels to input
         model_channels=num_channels,
         out_channels=(3 if not learn_sigma else 6),
         num_res_blocks=num_res_blocks,
         attention_resolutions=tuple(attention_ds),
         dropout=dropout,
         channel_mult=channel_mult,
-        num_classes=(NUM_CLASSES if class_cond else None),
+        num_classes=(num_classes if class_cond else None),
         use_checkpoint=use_checkpoint,
         use_fp16=use_fp16,
         num_heads=num_heads,
@@ -394,12 +446,23 @@ def create_gaussian_diffusion(
     rescale_timesteps=False,
     rescale_learned_sigmas=False,
     timestep_respacing="",
+    use_distributional=False,
+    distributional_track_terms_regardless_of_lambda=False,
+    distributional_kernel="energy",
+    distributional_lambda=1.0,
+    distributional_lambda_weighting="constant",
+    distributional_population_size=4,
+    distributional_kernel_kwargs={"beta": 1.0},
+    distributional_loss_weighting="no_weighting",
+    dispersion_loss_type="none",
 ):
     betas = gd.get_named_beta_schedule(noise_schedule, steps)
     if use_kl:
         loss_type = gd.LossType.RESCALED_KL
     elif rescale_learned_sigmas:
         loss_type = gd.LossType.RESCALED_MSE
+    elif use_distributional:
+        loss_type = gd.LossType.DISTRIBUTIONAL
     else:
         loss_type = gd.LossType.MSE
     if not timestep_respacing:
@@ -421,6 +484,14 @@ def create_gaussian_diffusion(
         ),
         loss_type=loss_type,
         rescale_timesteps=rescale_timesteps,
+        distributional_track_terms_regardless_of_lambda=distributional_track_terms_regardless_of_lambda,
+        distributional_kernel=distributional_kernel,
+        distributional_lambda=distributional_lambda,
+        distributional_lambda_weighting=distributional_lambda_weighting,
+        distributional_population_size=distributional_population_size,
+        distributional_kernel_kwargs=distributional_kernel_kwargs,
+        distributional_loss_weighting=gd.LossWeighting(distributional_loss_weighting.upper()),
+        dispersion_loss_type=gd.DispersionLossType[dispersion_loss_type.upper()]
     )
 
 
@@ -431,6 +502,15 @@ def add_dict_to_argparser(parser, default_dict):
             v_type = str
         elif isinstance(v, bool):
             v_type = str2bool
+        elif isinstance(v, dict):
+            v_type = json.loads
+        elif isinstance(v, list):
+            if len(v) > 0 and type(v[0]) is not None:
+                v_type = type(v[0])
+            else:
+                v_type = str
+            parser.add_argument(f"--{k}", default=v, type=v_type, nargs='+' if len(v) > 1 else '*')
+            continue
         parser.add_argument(f"--{k}", default=v, type=v_type)
 
 
