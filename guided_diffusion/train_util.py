@@ -3,6 +3,7 @@ import functools
 import os
 
 import blobfile as bf
+from guided_diffusion import wandb_utils
 import torch as th
 import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
@@ -25,6 +26,7 @@ class TrainLoop:
         *,
         model,
         diffusion,
+        sampling_diffusion,
         data,
         batch_size,
         microbatch,
@@ -32,15 +34,18 @@ class TrainLoop:
         ema_rate,
         log_interval,
         save_interval,
+        sample_interval,
         resume_checkpoint,
         use_fp16=False,
         fp16_scale_growth=1e-3,
         schedule_sampler=None,
         weight_decay=0.0,
         lr_anneal_steps=0,
+        max_steps=1000000,
     ):
         self.model = model
         self.diffusion = diffusion
+        self.sampling_diffusion = sampling_diffusion
         self.data = data
         self.batch_size = batch_size
         self.microbatch = microbatch if microbatch > 0 else batch_size
@@ -52,12 +57,14 @@ class TrainLoop:
         )
         self.log_interval = log_interval
         self.save_interval = save_interval
+        self.sample_interval = sample_interval
         self.resume_checkpoint = resume_checkpoint
         self.use_fp16 = use_fp16
         self.fp16_scale_growth = fp16_scale_growth
         self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
         self.weight_decay = weight_decay
         self.lr_anneal_steps = lr_anneal_steps
+        self.max_steps = max_steps
 
         self.step = 0
         self.resume_step = 0
@@ -150,24 +157,81 @@ class TrainLoop:
             )
             self.opt.load_state_dict(state_dict)
 
+    def _load_ema_for_sampling(self, rate_idx=0):
+        """Temporarily load EMA parameters into the model for sampling."""
+        # Store current parameters
+        current_state = copy.deepcopy(self.model.state_dict())
+        
+        # Load EMA parameters
+        ema_state_dict = self.mp_trainer.master_params_to_state_dict(self.ema_params[rate_idx])
+        self.model.load_state_dict(ema_state_dict)
+        
+        return current_state
+
+    def _restore_normal_params(self, saved_state):
+        """Restore normal parameters after sampling."""
+        self.model.load_state_dict(saved_state)
+
     def run_loop(self):
+        sample_cond = {}
+        if self.model.num_classes is not None:
+            sample_cond = {
+                "y": th.tensor([i % self.model.num_classes for i in range(self.batch_size)], device=dist_util.dev())
+            }
+        zs = th.randn(
+            (self.batch_size, 3, self.model.image_size, self.model.image_size),
+            device=dist_util.dev(),
+        )
+        
         while (
-            not self.lr_anneal_steps
-            or self.step + self.resume_step < self.lr_anneal_steps
+            (not self.lr_anneal_steps
+            or self.step + self.resume_step < self.lr_anneal_steps)
+            and
+            (not self.max_steps
+            or self.step + self.resume_step <= self.max_steps)
         ):
             batch, cond = next(self.data)
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
-                logger.dumpkvs()
+                stats = logger.dumpkvs()
+                if dist.get_rank() == 0:
+                    wandb_utils.log(stats, step=self.step)
             if self.step % self.save_interval == 0:
                 self.save()
                 # Run for a finite amount of time in integration tests.
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                     return
+            if self.step % self.sample_interval == 0:
+                logger.log("sampling...")
+                with th.no_grad():
+                    dist.barrier()
+                    # temporarily load EMA parameters for sampling
+                    saved_params = self._load_ema_for_sampling()
+
+                    self.ddp_model.eval()
+                    sampled_img = self.sampling_diffusion.ddim_sample_loop(
+                        self.ddp_model,
+                        (self.batch_size, 3, self.model.image_size, self.model.image_size),
+                        noise=zs,
+                        model_kwargs=sample_cond,
+                        progress=False,
+                    )
+                    self.ddp_model.train()
+                    gathered_samples = [th.zeros_like(sampled_img) for _ in range(dist.get_world_size())]
+
+                    dist.all_gather(gathered_samples, sampled_img)
+
+                    if dist.get_rank() == 0:
+                        gathered_samples = th.cat(gathered_samples, dim=0)
+                        wandb_utils.log_image(gathered_samples, step=self.step, nrow=10)
+
+                    # restore normal parameters
+                    self._restore_normal_params(saved_params)
+                dist.barrier()
             self.step += 1
-        # Save the last checkpoint if it wasn't already saved.
-        if (self.step - 1) % self.save_interval != 0:
-            self.save()
+
+
+        self.save()
 
     def run_step(self, batch, cond):
         self.forward_backward(batch, cond)
@@ -273,6 +337,9 @@ def parse_resume_step_from_filename(filename):
 def get_blob_logdir():
     # You can change this to be a separate path to save checkpoints to
     # a blobstore or some external drive.
+    dir = os.getenv("OPENAI_BLOBDIR")
+    if dir:
+        return dir
     return logger.get_dir()
 
 

@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "guided-diffusion"
+description = "Guided Diffusion Models"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "OpenAI", email = "info@openai.com"},
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = "==3.10.*"
+dependencies = [
+    "blobfile>=1.0.5",
+    "debugpy>=1.8.15",
+    "einops>=0.8.1",
+    "ipykernel>=6.30.0",
+    "mpi4py>=4.1.0",
+    "pandas>=2.3.1",
+    "pillow>=11.3.0",
+    "tqdm",
+    "wandb>=0.21.0",
+    "matplotlib",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+cu117 = ["torch==1.13", "torchvision==0.14"]
+cu124 = ["torch==2.6", "torchvision==0.21"]
+
+[tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "cu117" }, { extra = "cu124" }]]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu117", extra = "cu117" },
+    { index = "pytorch-cu124", extra = "cu124" },
+]
+torchvision = [
+    { index = "pytorch-cu117", extra = "cu117" },
+    { index = "pytorch-cu124", extra = "cu124" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu117"
+url = "https://download.pytorch.org/whl/cu117"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+
+[tool.setuptools.packages.find]
+include = ["guided_diffusion*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "guided_diffusion.__version__"}
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
+line_length = 88

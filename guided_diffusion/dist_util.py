@@ -18,6 +18,14 @@ GPUS_PER_NODE = 8
 SETUP_RETRY_COUNT = 3
 
 
+def cleanup():
+    """
+    Cleanup the distributed process group.
+    """
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
 def setup_dist():
     """
     Setup a distributed process group.
