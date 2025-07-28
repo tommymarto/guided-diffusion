@@ -12,6 +12,7 @@ from multiprocessing.pool import ThreadPool
 from typing import Iterable, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 import requests
 import tensorflow.compat.v1 as tf
 from scipy import linalg
@@ -29,6 +30,13 @@ def main():
     parser.add_argument("ref_batch", help="path to reference batch npz file")
     parser.add_argument("sample_batch", help="path to sample batch npz file")
     args = parser.parse_args()
+    
+    sampling_steps = args.sample_batch.split("/")[-2].split("-")[-1]
+    sampling_algo = args.sample_batch.split("/")[-2].split("-")[0]
+    csv_path = os.path.join("/", *args.sample_batch.split("/")[:-2], "results.csv")
+
+    # .../samples_${NUM_FID_SAMPLES}x32x32x3.npz
+    num_samples = args.sample_batch.split("/")[-1].split("_")[1].split("x")[0]
 
     config = tf.ConfigProto(
         allow_soft_placement=True  # allows DecodeJpeg to run on CPU in Inception graph
@@ -52,12 +60,33 @@ def main():
     sample_stats, sample_stats_spatial = evaluator.read_statistics(args.sample_batch, sample_acts)
 
     print("Computing evaluations...")
-    print("Inception Score:", evaluator.compute_inception_score(sample_acts[0]))
-    print("FID:", sample_stats.frechet_distance(ref_stats))
-    print("sFID:", sample_stats_spatial.frechet_distance(ref_stats_spatial))
     prec, recall = evaluator.compute_prec_recall(ref_acts[0], sample_acts[0])
-    print("Precision:", prec)
-    print("Recall:", recall)
+    metrics = {
+        "steps": sampling_steps,
+        "sampling": sampling_algo,
+        "num_samples": num_samples,
+        "inception_score": evaluator.compute_inception_score(sample_acts[0]),
+        "fid": sample_stats.frechet_distance(ref_stats),
+        "sfid": sample_stats_spatial.frechet_distance(ref_stats_spatial),
+        "precision": prec,
+        "recall": recall,
+        "timestamp": np.datetime64('now', 's').astype(str),
+    }
+    print("Inception Score:", metrics["inception_score"])
+    print("FID:", metrics["fid"])
+    print("sFID:", metrics["sfid"])
+    print("Precision:", metrics["precision"])
+    print("Recall:", metrics["recall"])
+    
+    # Check if CSV exists, create or append
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path)
+        df = pd.concat([df, pd.DataFrame([metrics])], ignore_index=True)
+    else:
+        df = pd.DataFrame([metrics])
+    
+    df.to_csv(csv_path, index=False)
+    print(f"Results saved to {csv_path}")
 
 
 class InvalidFIDException(Exception):
@@ -119,7 +148,7 @@ class Evaluator:
     def __init__(
         self,
         session,
-        batch_size=64,
+        batch_size=1024,
         softmax_batch_size=512,
     ):
         self.sess = session
@@ -133,7 +162,7 @@ class Evaluator:
             self.softmax = _create_softmax_graph(self.softmax_input)
 
     def warmup(self):
-        self.compute_activations(np.zeros([1, 8, 64, 64, 3]))
+        self.compute_activations(np.zeros([1, 8, 32, 32, 3]))
 
     def read_activations(self, npz_path: str) -> Tuple[np.ndarray, np.ndarray]:
         with open_npz_array(npz_path, "arr_0") as reader:
@@ -340,8 +369,8 @@ class ManifoldEstimator:
                  - precision: an np.ndarray of length K1
                  - recall: an np.ndarray of length K2
         """
-        features_1_status = np.zeros([len(features_1), radii_2.shape[1]], dtype=np.bool)
-        features_2_status = np.zeros([len(features_2), radii_1.shape[1]], dtype=np.bool)
+        features_1_status = np.zeros([len(features_1), radii_2.shape[1]], dtype=np.bool_)
+        features_2_status = np.zeros([len(features_2), radii_1.shape[1]], dtype=np.bool_)
         for begin_1 in range(0, len(features_1), self.row_batch_size):
             end_1 = begin_1 + self.row_batch_size
             batch_1 = features_1[begin_1:end_1]
