@@ -182,6 +182,7 @@ class TrainLoop:
             (self.batch_size, 3, self.model.image_size, self.model.image_size),
             device=dist_util.dev(),
         )
+        just_starting = True
         
         while (
             (not self.lr_anneal_steps
@@ -201,7 +202,7 @@ class TrainLoop:
                 # Run for a finite amount of time in integration tests.
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                     return
-            if self.step % self.sample_interval == 0:
+            if self.step % self.sample_interval == 0 and not just_starting:
                 logger.log("sampling...")
                 with th.no_grad():
                     dist.barrier()
@@ -229,6 +230,7 @@ class TrainLoop:
                     self._restore_normal_params(saved_params)
                 dist.barrier()
             self.step += 1
+            just_starting = False
 
 
         self.save()
@@ -305,7 +307,6 @@ class TrainLoop:
                 with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
                     th.save(state_dict, f)
 
-        save_checkpoint(0, self.mp_trainer.master_params)
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)
 
@@ -316,6 +317,9 @@ class TrainLoop:
             ) as f:
                 th.save(self.opt.state_dict(), f)
 
+        # Save model parameters last to prevent race conditions where a restart
+        # loads model at step N, but opt/ema state isn't saved for step N.
+        save_checkpoint(0, self.mp_trainer.master_params)
         dist.barrier()
 
 
@@ -346,7 +350,16 @@ def get_blob_logdir():
 def find_resume_checkpoint():
     # On your infrastructure, you may want to override this to automatically
     # discover the latest checkpoint on your blob storage, etc.
-    return None
+    checkpoints_dir = os.getenv("OPENAI_BLOBDIR", logger.get_dir())
+    if not checkpoints_dir:
+        return None
+    checkpoints = [
+        f for f in os.listdir(checkpoints_dir) if f.startswith("model") and f.endswith(".pt")
+    ]
+    if len(checkpoints) == 0:
+        return None
+    checkpoints = sorted(checkpoints, key=lambda f: parse_resume_step_from_filename(f))
+    return os.path.join(checkpoints_dir, checkpoints[-1])
 
 
 def find_ema_checkpoint(main_checkpoint, step, rate):

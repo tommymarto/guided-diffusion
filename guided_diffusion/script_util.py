@@ -45,6 +45,7 @@ def diffusion_defaults():
         distributional_population_size=4,
         distributional_kernel_kwargs={"beta": 1.0},
         distributional_loss_weighting="no_weighting",  # can be "no_weighting" or "kingma_snr"
+        distributional_num_eps_channels=1,
         dispersion_loss_type="none"
     )
 
@@ -131,6 +132,7 @@ def create_model_and_diffusion(
     distributional_population_size,
     distributional_kernel_kwargs,
     distributional_loss_weighting,
+    distributional_num_eps_channels,
     dispersion_loss_type
 ):
     model = create_model(
@@ -151,7 +153,8 @@ def create_model_and_diffusion(
         use_fp16=use_fp16,
         use_new_attention_order=use_new_attention_order,
         num_classes=num_classes,
-        use_distribuitional=use_distributional,
+        use_distributional=use_distributional,
+        distributional_num_eps_channels=distributional_num_eps_channels,
     )
     diffusion = create_gaussian_diffusion(
         steps=diffusion_steps,
@@ -170,6 +173,7 @@ def create_model_and_diffusion(
         distributional_population_size=distributional_population_size,
         distributional_kernel_kwargs=distributional_kernel_kwargs,
         distributional_loss_weighting=distributional_loss_weighting,
+        distributional_num_eps_channels=distributional_num_eps_channels,
         dispersion_loss_type=dispersion_loss_type,
     )
     return model, diffusion
@@ -193,7 +197,8 @@ def create_model(
     use_fp16=False,
     use_new_attention_order=False,
     num_classes=NUM_CLASSES,
-    use_distribuitional=False,
+    use_distributional=False,
+    distributional_num_eps_channels=1,
 ):
     if channel_mult == "":
         if image_size == 512:
@@ -217,7 +222,7 @@ def create_model(
 
     return UNetModel(
         image_size=image_size,
-        in_channels=(3 if not use_distribuitional else 6),  # Adding eps channels to input
+        in_channels=3,
         model_channels=num_channels,
         out_channels=(3 if not learn_sigma else 6),
         num_res_blocks=num_res_blocks,
@@ -233,6 +238,8 @@ def create_model(
         use_scale_shift_norm=use_scale_shift_norm,
         resblock_updown=resblock_updown,
         use_new_attention_order=use_new_attention_order,
+        use_distributional=use_distributional,
+        distributional_num_eps_channels=distributional_num_eps_channels,
     )
 
 
@@ -454,6 +461,7 @@ def create_gaussian_diffusion(
     distributional_population_size=4,
     distributional_kernel_kwargs={"beta": 1.0},
     distributional_loss_weighting="no_weighting",
+    distributional_num_eps_channels=1,
     dispersion_loss_type="none",
 ):
     betas = gd.get_named_beta_schedule(noise_schedule, steps)
@@ -491,6 +499,7 @@ def create_gaussian_diffusion(
         distributional_population_size=distributional_population_size,
         distributional_kernel_kwargs=distributional_kernel_kwargs,
         distributional_loss_weighting=gd.LossWeighting(distributional_loss_weighting.upper()),
+        distributional_num_eps_channels=distributional_num_eps_channels,
         dispersion_loss_type=gd.DispersionLossType[dispersion_loss_type.upper()]
     )
 

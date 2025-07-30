@@ -7,11 +7,10 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torchvision.transforms as transforms
 from tqdm import tqdm
 
-import distributional_diffusion_timeseries.datasets.image_loader as vl
-from distributional_diffusion_timeseries.models.diffusions.schedules import CosineSchedule as CosineScheduleOriginal
+from guided_diffusion.script_util import create_gaussian_diffusion
+from scripts_extra.data_utils import load_data
 
 
 # ==============================================================================
@@ -33,37 +32,31 @@ def load_dataset(
 		A flattened and centered data tensor of shape (n_total_samples, d_features).
 	"""
 	print(f"Loading CIFAR-10 data for classes {class_indices}...")
-
-	transform = transforms.Compose([transforms.ToTensor()])
-
-	# Load the full training dataset
-	trainset = vl.build_streaming_image_dataloader(
-		datadir=f"/ceph/scratch/martorellat/data/{dataset_name}/mds/train",
-		batch_size=1,
-		shuffle=False,
-		image_size=28 if dataset_name == "mnist" else 32,
-		num_channels=1 if dataset_name == "mnist" else 3,
-		transform=[transforms.Grayscale(1), transforms.ToTensor()]
-		if dataset_name == "mnist"
-		else [transforms.ToTensor()],
+	
+	data = load_data(
+		data_dir="/nfs/ghome/live/martorellat/data/cifar_train",
+		batch_size=500,
+		image_size=32,
+		class_cond=True,
 	)
-
-	# if dataloader.dataset.get_full_element_by_index(i)["label"] == 5:
-	# 	img = dataloader.dataset[i]
-	# 	plt.imshow(img["image"].numpy().transpose(1, 2, 0))
 
 	# Filter for the desired classes
 	all_data = []
 	all_labels = []
-	for i in range(len(trainset.dataset)):
-		label = trainset.dataset.get_full_element_by_index(i)["label"]
-		if label in class_indices:
-			img = trainset.dataset[i]["image"]
-			all_data.append(img)
-			all_labels.append(label)
+	
+	assert len(data.dataset) % 500 == 0, "Batch size must be a multiple of 500 for CIFAR-10."
+	
+	iter_loader = iter(data)
+	for _ in tqdm(range(100)):  # 50_000 / 500 (batch_size)
+		img_batch, cond = next(iter_loader)
+		labels = cond["y"]
+		for i in range(labels.shape[0]):
+			if labels[i].item() in class_indices:
+				all_data.append(img_batch[i])
+				all_labels.append(labels[i])
 
 	all_data = torch.stack(all_data)
-	all_labels = torch.tensor(all_labels)
+	all_labels = torch.stack(all_labels)
 
 	# Flatten the images and select the specified number of samples
 	n_total, c, h, w = all_data.shape
@@ -88,11 +81,12 @@ def load_dataset(
 		print(f"  - Selected {num_to_take} samples for class {class_idx}.")
 
 	final_data = torch.cat(subset_data, dim=0)
-	# final_data = final_data * 2 - 1
 
 	# Center the data (subtract mean) for covariance calculation
 	data_mean = torch.mean(final_data, dim=0, keepdim=True)
 	centered_data = final_data - data_mean
+	
+	print(data_mean.min(), data_mean.max(), data_mean.mean(), data_mean.std())
 
 	print(f"Dataset created with shape: {centered_data.shape}")
 	return centered_data
@@ -223,13 +217,13 @@ def calculate_collapse_time_torch(data: torch.Tensor, t_range: np.ndarray, n_pri
 	return t_C, f_e_values
 
 
-# %%
-# ==============================================================================
-# 3. MAIN EXECUTION BLOCK
-# ==============================================================================
+#%%
+# # ==============================================================================
+# # 3. MAIN EXECUTION BLOCK
+# # ==============================================================================
 # classes = [1, 7]  # Default classes: 3=cat, 5=dog
-# num_samples = 50000
-# dataset_name = "mnist"
+# num_samples = 30000
+# dataset_name = "cifar10"
 
 # # --- Setup Device ---
 # device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -260,6 +254,7 @@ def calculate_collapse_time_torch(data: torch.Tensor, t_range: np.ndarray, n_pri
 # t_C_biroli, f_values = calculate_collapse_time_torch(filtered_data, t_scan_range, n_prime, batch_size)
 
 # # %%
+
 # # --- Plot the Results ---
 # if t_C_biroli is not None:
 # 	alpha = np.log(n_samples_total) / d_features
@@ -298,25 +293,40 @@ def calculate_collapse_time_torch(data: torch.Tensor, t_range: np.ndarray, n_pri
 # Your provided CosineSchedule class
 # I've modified it slightly to accept numpy arrays for plotting
 class CosineSchedule:
-	def __init__(self, logsnr_min=-15, logsnr_max=15):
-		self.logsnr_min = logsnr_min
-		self.logsnr_max = logsnr_max
+	def __init__(self):
+		self.diffusion = create_gaussian_diffusion(
+			learn_sigma=False,
+			steps=4000,
+			noise_schedule="cosine",
+			timestep_respacing="",
+			use_kl=False,
+			predict_xstart=False,
+			rescale_timesteps=False,
+			rescale_learned_sigmas=False,
+			
+			# Distributional loss configuration
+			use_distributional=False,
+			distributional_track_terms_regardless_of_lambda=False, # can be set to False to save memory and compute, True will track all terms even if lambda is 0
+			distributional_kernel="energy",
+			distributional_lambda=1.0,
+			distributional_lambda_weighting="constant",
+			distributional_population_size=4,
+			distributional_kernel_kwargs={"beta": 1.0},
+			distributional_loss_weighting="no_weighting",  # can be "no_weighting" or "kingma_snr"
+			distributional_num_eps_channels=3,
+			dispersion_loss_type="none"
+		)
+		
+		self.logsnrs = torch.tensor(
+			list(self._compute_lognsr(t) for t in range(4000))
+		)
 
-		t_min = math.atan(math.exp(-0.5 * logsnr_max))
-		t_max = math.atan(math.exp(-0.5 * logsnr_min))
-		self.t_min = t_min
-		self.t_max = t_max
-
-	def __call__(self, t):
+	def _compute_lognsr(self, t):
 		# Allow both torch tensors and numpy arrays
-		if isinstance(t, np.ndarray):
-			log_fn = np.log
-			tan_fn = np.tan
-		else:
-			log_fn = torch.log
-			tan_fn = torch.tan
+		alpha = self.diffusion.sqrt_alphas_cumprod[t] 
+		sigma = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
 
-		logsnr = -2 * log_fn(tan_fn(self.t_min + t * (self.t_max - self.t_min)))
+		logsnr = torch.log(torch.tensor((alpha ** 2 / sigma ** 2)).clamp(min=1e-20))
 		return logsnr
 
 
@@ -327,12 +337,12 @@ def convert_biroli_to_custom_cosine(t_biroli: float, schedule: CosineSchedule, e
 	This function works by equating the Signal-to-Noise Ratio (SNR) between the two frameworks.
 
 	Args:
-	    t_biroli: The time to convert (e.g., t_S or t_C) from the unnormalized [0, inf) scale.
-	    schedule: An instance of your CosineSchedule class, containing schedule parameters t_min and t_max.
-	    eps: A small epsilon to ensure numerical stability by preventing log(0) or division by zero.
+		t_biroli: The time to convert (e.g., t_S or t_C) from the unnormalized [0, inf) scale.
+		schedule: An instance of your CosineSchedule class, containing schedule parameters t_min and t_max.
+		eps: A small epsilon to ensure numerical stability by preventing log(0) or division by zero.
 
 	Returns:
-	    The equivalent time t_your on the normalized [0, 1] scale of your cosine schedule.
+		The equivalent time t_your on the normalized [0, 1] scale of your cosine schedule.
 	"""
 	# =======================================================================================================
 	# STEP 1: Convert the Biroli time into its equivalent, schedule-independent log(SNR) value.
@@ -363,13 +373,17 @@ def convert_biroli_to_custom_cosine(t_biroli: float, schedule: CosineSchedule, e
 	# =======================================================================================================
 
 	# This line implements exp(-0.5 * target_logSNR)
-	exp_val = np.exp(-0.5 * target_logSNR)
+	# exp_val = np.exp(-0.5 * target_logSNR)
 
-	# This line implements arctan(...)
-	atan_val = np.arctan(exp_val)
+	# # This line implements arctan(...)
+	# atan_val = np.arctan(exp_val)
 
-	# This line implements the final division to isolate t_your
-	t_your = (atan_val - schedule.t_min) / (schedule.t_max - schedule.t_min)
+	# # This line implements the final division to isolate t_your
+	# t_your = (atan_val - schedule.t_min) / (schedule.t_max - schedule.t_min)
+	
+	
+	closest_discrete_timestep = np.argmin(np.abs(schedule.logsnrs - target_logSNR))
+	t_your = closest_discrete_timestep / 4000
 
 	# --- User feedback ---
 	print(f"  - t_biroli = {t_biroli:.4f} -> target logSNR = {target_logSNR:.4f}")
@@ -382,9 +396,9 @@ def convert_biroli_to_custom_cosine(t_biroli: float, schedule: CosineSchedule, e
 
 # 1. Instantiate your schedule
 # These are the default values, you can change them if you use different ones.
-custom_schedule = CosineSchedule(logsnr_min=-15, logsnr_max=15)
+# custom_schedule = CosineSchedule()
 
-# 2. Use computed Biroli times to convert them to your schedule
+# # 2. Use computed Biroli times to convert them to your schedule
 # print("Converting characteristic times for your Custom Cosine Schedule.")
 # print("-" * 60)
 
@@ -410,8 +424,8 @@ custom_schedule = CosineSchedule(logsnr_min=-15, logsnr_max=15)
 # print("=" * 70)
 
 # # Optional: Plot the schedule to visualize the conversion
-# t_range_your = np.linspace(0.0, 1.0, 200)
-# logsnr_range = custom_schedule(t_range_your)
+# t_range_your = np.linspace(0.0, 1.0, 4000)
+# logsnr_range = custom_schedule.logsnrs.numpy()
 
 # logsnr_S = np.log(np.exp(-2 * t_S_biroli) / (1 - np.exp(-2 * t_S_biroli)))
 # logsnr_S_one_channel = np.log(np.exp(-2 * t_S_biroli_one_channel) / (1 - np.exp(-2 * t_S_biroli_one_channel)))
@@ -442,28 +456,28 @@ custom_schedule = CosineSchedule(logsnr_min=-15, logsnr_max=15)
 # %%
 
 
-class KingmaSNRLossWeighting:
-	"""Kingma et al. (2021) SNR loss weighting."""
+# class KingmaSNRLossWeighting:
+# 	"""Kingma et al. (2021) SNR loss weighting."""
 
-	def __init__(self, b=0):
-		self.b = b
+# 	def __init__(self, b=0):
+# 		self.b = b
 
-	def __call__(self, loss, schedule_t):
-		logsnr = schedule_t["log_snr"]
-		weight = (1 + (self.b - logsnr).exp()) ** -1
+# 	def __call__(self, loss, schedule_t):
+# 		logsnr = schedule_t["log_snr"]
+# 		weight = (1 + (self.b - logsnr).exp()) ** -1
 
-		return loss * weight
+# 		return loss * weight
 
 
-t_loss = torch.linspace(0, 1, 1000)
-schedule = CosineScheduleOriginal()
-schedule_t = schedule(t_loss)
+# t_loss = torch.linspace(0, 1, 1000)
+# schedule = CosineScheduleOriginal()
+# schedule_t = schedule(t_loss)
 
-b_values = [-2, -1, 0, 1, 2]  # Different b values for Kingma SNR loss weighting
-loss_weighting = [KingmaSNRLossWeighting(b=b) for b in b_values]
+# b_values = [-2, -1, 0, 1, 2]  # Different b values for Kingma SNR loss weighting
+# loss_weighting = [KingmaSNRLossWeighting(b=b) for b in b_values]
 
-losses = torch.ones_like(t_loss)  # Example losses, can be any tensor
-weighted_losses = [lw(losses, schedule_t) for lw in loss_weighting]
+# losses = torch.ones_like(t_loss)  # Example losses, can be any tensor
+# weighted_losses = [lw(losses, schedule_t) for lw in loss_weighting]
 
 # ==============================================================================
 #                 STANDALONE PLOTTING SNIPPET
@@ -561,7 +575,17 @@ classes_pairs = list(itertools.combinations(classes, 2))
 results = [
 	calculate_dynamical_regime_points("cifar10", list(pair), num_samples=50000, n_prime=50000) for pair in classes_pairs
 ]
+
+#%%
+# save to pickle file
+import pickle
+
+dataset_name = "cifar10"
+d_features = 32 * 32 * 3  # For CIFAR-10, each image is 32x32 pixels with 3 color channels
+with open(f"../outputs/collapse_results_cifar10.pkl", "wb") as f:
+	pickle.dump(results, f)
 # %%
+
 
 # for i, (t_C, t_S, t_S_one_channel, f_values, n_samples_total) in enumerate(results):
 # 	alpha = np.log(n_samples_total) / d_features
@@ -593,10 +617,6 @@ results = [
 # 	plt.savefig("cifar10_collapse_plot.png")
 # 	print("\nPlot saved to cifar10_collapse_plot.png")
 # 	plt.show()
-# %%
-
-dataset_name = "cifar10"
-d_features = 32 * 32 * 3  # For CIFAR-10, each image is 32x32 pixels with 3 color channels
 
 # %%
 
@@ -634,7 +654,7 @@ if len(clean_f_vals) > 0:
 	plt.ylim(min(clean_f_vals) - 0.2, max(clean_f_vals) + 0.2)
 plt.xlim(0, t_scan_range[-1])
 
-plt.savefig("cifar10_collapse_plot.png")
+plt.savefig("../outputs/cifar10_collapse_plot.png")
 print("\nPlot saved to cifar10_collapse_plot.png")
 plt.show()
 
@@ -642,7 +662,7 @@ plt.show()
 
 # 1. Instantiate your schedule
 # These are the default values, you can change them if you use different ones.
-custom_schedule = CosineSchedule(logsnr_min=-15, logsnr_max=15)
+custom_schedule = CosineSchedule()
 
 # 2. Use computed Biroli times to convert them to your schedule
 print("Converting characteristic times for your Custom Cosine Schedule.")
@@ -670,8 +690,8 @@ print(f"| {'Collapse':<12} | {t_C:<25.4f} | {t_C_your:<30.4f} |")
 print("=" * 70)
 
 # Optional: Plot the schedule to visualize the conversion
-t_range_your = np.linspace(0.0, 1.0, 200)
-logsnr_range = custom_schedule(t_range_your)
+t_range_your = np.linspace(0.0, 1.0, 4000)
+logsnr_range = custom_schedule.logsnrs.numpy()
 
 logsnr_S = np.log(np.exp(-2 * t_S) / (1 - np.exp(-2 * t_S)))
 logsnr_S_one_channel = np.log(np.exp(-2 * t_S_one_channel) / (1 - np.exp(-2 * t_S_one_channel)))
@@ -697,6 +717,7 @@ plt.ylabel("log(SNR)")
 plt.title(f"Mapping Biroli Times to Your Cosine Noise Schedule - {dataset_name}")
 plt.legend()
 plt.grid(True, alpha=0.3)
+plt.savefig(f"../outputs/{dataset_name}_time_matching_dynamical.png")
 plt.show()
 # %%
 import matplotlib.pyplot as plt
@@ -791,7 +812,7 @@ if len(clean_f_vals) > 0:
 plt.xlim(0, t_scan_range[-1])
 
 # Save and show
-plt.savefig(f"{dataset_name}_collapse_plot_with_errors.png")
+plt.savefig(f"../outputs/{dataset_name}_collapse_plot_with_errors.png")
 print(f"\nPlot saved to {dataset_name}_collapse_plot_with_errors.png")
 plt.show()
 
@@ -807,29 +828,29 @@ import matplotlib.pyplot as plt
 # --- 1. Propagate the error from the Biroli scale to your custom scale ---
 
 def get_error_bounds(t_mean, t_std, schedule):
-    """
-    Calculates the mean point and its error bounds on the custom schedule scale.
-    """
-    # Define the range of the Biroli time based on its standard deviation
-    t_biroli_min = t_mean - t_std
-    t_biroli_max = t_mean + t_std
+	"""
+	Calculates the mean point and its error bounds on the custom schedule scale.
+	"""
+	# Define the range of the Biroli time based on its standard deviation
+	t_biroli_min = t_mean - t_std
+	t_biroli_max = t_mean + t_std
 
-    # Convert the mean and the bounds to your custom [0, 1] time scale
-    t_your_mean = convert_biroli_to_custom_cosine(t_mean, schedule)
-    t_your_min = convert_biroli_to_custom_cosine(t_biroli_min, schedule)
-    t_your_max = convert_biroli_to_custom_cosine(t_biroli_max, schedule)
+	# Convert the mean and the bounds to your custom [0, 1] time scale
+	t_your_mean = convert_biroli_to_custom_cosine(t_mean, schedule)
+	t_your_min = convert_biroli_to_custom_cosine(t_biroli_min, schedule)
+	t_your_max = convert_biroli_to_custom_cosine(t_biroli_max, schedule)
 
-    # Calculate the corresponding logSNR values
-    # Note the inverse relationship: a smaller t_biroli gives a larger logSNR
-    logsnr_mean = np.log(np.exp(-2 * t_mean) / (1 - np.exp(-2 * t_mean)))
-    logsnr_min = np.log(np.exp(-2 * t_biroli_max) / (1 - np.exp(-2 * t_biroli_max))) # max t -> min logSNR
-    logsnr_max = np.log(np.exp(-2 * t_biroli_min) / (1 - np.exp(-2 * t_biroli_min))) # min t -> max logSNR
+	# Calculate the corresponding logSNR values
+	# Note the inverse relationship: a smaller t_biroli gives a larger logSNR
+	logsnr_mean = np.log(np.exp(-2 * t_mean) / (1 - np.exp(-2 * t_mean)))
+	logsnr_min = np.log(np.exp(-2 * t_biroli_max) / (1 - np.exp(-2 * t_biroli_max))) # max t -> min logSNR
+	logsnr_max = np.log(np.exp(-2 * t_biroli_min) / (1 - np.exp(-2 * t_biroli_min))) # min t -> max logSNR
 
-    # Create error values for plt.errorbar (which expects [lower_err, upper_err])
-    x_err = [[t_your_mean - t_your_min], [t_your_max - t_your_mean]]
-    y_err = [[logsnr_mean - logsnr_min], [logsnr_max - logsnr_mean]]
-    
-    return t_your_mean, logsnr_mean, x_err, y_err, logsnr_min, logsnr_max
+	# Create error values for plt.errorbar (which expects [lower_err, upper_err])
+	x_err = [[t_your_mean - t_your_min], [t_your_max - t_your_mean]]
+	y_err = [[logsnr_mean - logsnr_min], [logsnr_max - logsnr_mean]]
+	
+	return t_your_mean, logsnr_mean, x_err, y_err, logsnr_min, logsnr_max
 
 
 # Calculate error bounds for each characteristic time
@@ -846,47 +867,47 @@ def get_error_bounds(t_mean, t_std, schedule):
 # --- 2. Create the Plot ---
 
 plt.figure(figsize=(12, 7))
-t_range_your = np.linspace(0.0, 1.0, 200)
-logsnr_range = custom_schedule(t_range_your)
+t_range_your = np.linspace(0.0, 1.0, 4000)
+logsnr_range = custom_schedule.logsnrs.numpy()
 
 # Plot the main schedule curve
-plt.plot(t_range_your, logsnr_range, label="Your schedule: logSNR vs. t_your", zorder=1)
+plt.plot(t_range_your, logsnr_range, label="Cosine schedule: logSNR vs. t", zorder=1)
 
 # --- Plot the characteristic points with their error bars ---
 
 # For t_C
 plt.errorbar(t_C_your_mean, logsnr_C_mean, yerr=t_C_yerr, xerr=t_C_xerr,
-             fmt='o', color="red", capsize=5, label=f"Mean $t_C$", zorder=5)
+			 fmt='o', color="red", capsize=5, label=f"Mean $t_C$", zorder=5)
 plt.axhspan(logsnr_C_min, logsnr_C_max, color='red', alpha=0.15, label="Std. Dev. of $t_C$ Level")
 
 # For t_S (one channel)
 plt.errorbar(t_S_1ch_your_mean, logsnr_S_1ch_mean, yerr=t_S_1ch_yerr, xerr=t_S_1ch_xerr,
-             fmt='o', color="black", capsize=5, label=f"Mean $t_S (1ch)$", zorder=5)
+			 fmt='o', color="black", capsize=5, label=f"Mean $t_S (1ch)$", zorder=5)
 plt.axhspan(logsnr_S_1ch_min, logsnr_S_1ch_max, color='gray', alpha=0.15, label="Std. Dev. of $t_S (1ch)$ Level")
 
 # For t_S (all channels)
 plt.errorbar(t_S_your_mean, logsnr_S_mean, yerr=t_S_yerr, xerr=t_S_xerr,
-             fmt='o', color="green", capsize=5, label=f"Mean $t_S$", zorder=5)
+			 fmt='o', color="green", capsize=5, label=f"Mean $t_S$", zorder=5)
 plt.axhspan(logsnr_S_min, logsnr_S_max, color='green', alpha=0.15, label="Std. Dev. of $t_S$ Level")
 
 # --- 3. Final plot formatting ---
-plt.xlabel("Your Normalized Time t_your [0, 1]", fontsize=12)
+plt.xlabel("Normalized Time t [0, 1]", fontsize=12)
 plt.ylabel("log(SNR)", fontsize=12)
-plt.title(f"Mapping Biroli Times to Your Cosine Noise Schedule - {dataset_name}", fontsize=16)
+plt.title(f"Mapping Biroli Times to Cosine Noise Schedule ({dataset_name})", fontsize=16)
 plt.legend(loc='best', fontsize='small')
 plt.grid(True, alpha=0.3)
-
+plt.savefig(f"../outputs/{dataset_name}_time_matching_dynamical_with_error_bars.png")
 plt.show()
 # %%
 
 # save to pickle file
 import pickle
-with open(f"collapse_results_{dataset_name}.pkl", "wb") as f:
+with open(f"../outputs/collapse_results_{dataset_name}.pkl", "wb") as f:
 	pickle.dump(results, f)
 # %%
 import pickle
 # load from pickle file
-with open(f"collapse_results_{dataset_name}.pkl", "rb") as f:
+with open(f"../outputs/collapse_results_{dataset_name}.pkl", "rb") as f:
 	results = pickle.load(f)
 
 # %%

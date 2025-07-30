@@ -57,7 +57,7 @@ def main(args):
 
     plt.xlabel('Sampling Steps')
     plt.ylabel('FID Score')
-    plt.title(f'FID Score vs Sampling Steps\n{args.exp_name}')
+    plt.title('FID Score vs Sampling Steps')
     plt.yticks(range(0, int(cumulative_df['fid'].max()) + 1, 10))
     plt.xscale('log')
     plt.xticks(args.sampling_steps, [str(step) for step in args.sampling_steps])
@@ -74,7 +74,7 @@ def main(args):
 def create_argparser():
     defaults = dict(
         exp_name=[""],
-        sampling_steps=[50, 100, 200, 500],
+        sampling_steps=[3, 4, 5, 10, 30, 50, 100],
         sampling_modes=["DDIM"],
         # cfg_scales=[0.0, 1.0, 2.0],  # Uncomment if cfg scales are needed
         samples_dir=[""],
@@ -86,24 +86,25 @@ def create_argparser():
 
 
 if __name__ == "__main__":
-    main(create_argparser().parse_args())
-    # exp_name = [
-    #     "cifar10_uncond_openai",
-    #     "cifar10_cond_baseline",
-    #     "cifar10_cond_distributional_logsnr",
-    #     "cifar10_cond_distributional_noweighting",
-    #     "cifar10_cond_distributional_noweighting_lambda_linear",
-    # ]
+    # main(create_argparser().parse_args())
+    exp_name = [
+        "cifar10_uncond_openai",
+        "cifar10_cond_openai",
+        "cifar10_cond_baseline",
+        "cifar10_cond_distributional_logsnr",
+        "cifar10_cond_distributional_noweighting",
+        "cifar10_cond_distributional_noweighting_lambda_linear",
+    ]
     
-    # args = EasyDict(dict(
-    #     exp_name=exp_name,
-    #     sampling_steps=[2, 3, 4, 5, 10, 30, 50, 100, 200, 500],
-    #     sampling_modes=["DDIM"],
-    #     # cfg_scales=[0.0, 1.0, 2.0],  # Uncomment if cfg scales are needed
-    #     samples_dir=[
-    #         f"/ceph/scratch/martorellat/guided_diffusion/samples_{name}"
-    #         for name in exp_name
-    #     ],
-    #     plot_out="/ceph/scratch/martorellat/guided_diffusion/figures",
-    # ))
-    # main(args)
+    args = EasyDict(dict(
+        exp_name=exp_name,
+        sampling_steps=[3, 4, 5, 10, 30, 50, 100],
+        sampling_modes=["DDIM"],
+        # cfg_scales=[0.0, 1.0, 2.0],  # Uncomment if cfg scales are needed
+        samples_dir=[
+            f"/ceph/scratch/martorellat/guided_diffusion/samples_{name}"
+            for name in exp_name
+        ],
+        plot_out="/ceph/scratch/martorellat/guided_diffusion/figures",
+    ))
+    main(args)

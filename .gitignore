@@ -6,4 +6,4 @@ guided_diffusion.egg-info
 .vscode
 wandb
 logs
-git_old
+outputs

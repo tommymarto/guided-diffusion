@@ -177,6 +177,7 @@ class GaussianDiffusion:
         distributional_kernel_kwargs={"beta": 1.0},
         distributional_loss_weighting=LossWeighting("NO_WEIGHTING"),
         dispersion_loss_type=DispersionLossType.NONE,
+        distributional_num_eps_channels=1,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -191,7 +192,9 @@ class GaussianDiffusion:
         self.distributional_population_size = distributional_population_size
         self.distributional_kernel_kwargs = distributional_kernel_kwargs
         self.distributional_loss_weighting = distributional_loss_weighting
+        self.distributional_num_eps_channels = distributional_num_eps_channels
         
+        self.inverted_snr = False
         self.dispersion_loss_type = dispersion_loss_type
 
         # Use float64 for accuracy.
@@ -598,7 +601,9 @@ class GaussianDiffusion:
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
                 if self.use_distributional:
-                    model_kwargs["eps"] = th.randn_like(img)
+                    eps = th.randn_like(img)
+                    eps = eps[:, :self.distributional_num_eps_channels, ...]
+                    model_kwargs["eps"] = eps
                 out = self.p_sample(
                     model,
                     img,
@@ -771,7 +776,9 @@ class GaussianDiffusion:
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
                 if self.use_distributional:
-                    model_kwargs["eps"] = th.randn_like(img)
+                    eps = th.randn_like(img)
+                    eps = eps[:, :self.distributional_num_eps_channels, ...]
+                    model_kwargs["eps"] = eps
                 out = self.ddim_sample(
                     model,
                     img,
@@ -898,6 +905,7 @@ class GaussianDiffusion:
             x_t_population = repeat(x_t, "n ... -> (n m) ...", m=m)
             t_population = repeat(t, "n -> (n m)", m=m)
             eps_population = th.randn_like(x_t_population)
+            eps_population = eps_population[:, :self.distributional_num_eps_channels, ...]
             
             if model_kwargs is not None:
                 y = model_kwargs["y"]
@@ -971,7 +979,7 @@ class GaussianDiffusion:
             
             if self.distributional_loss_weighting == LossWeightingType.KINGMA_SNR:
                 logsnr = self._calculate_logsnr(t, terms["score"])
-                if self.model_mean_type == ModelMeanType.EPSILON:
+                if self.model_mean_type == ModelMeanType.EPSILON and not self.inverted_snr:
                     logsnr = -logsnr  # flip the sign for epsilon prediction
                 weight = (1 + (self.distributional_loss_weighting.b - logsnr).exp()) ** -1
                 terms["loss"] = -(terms["score"] * weight)

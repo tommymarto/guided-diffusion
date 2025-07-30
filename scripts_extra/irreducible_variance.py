@@ -1,17 +1,36 @@
+#%%
 import math
-from typing import Callable, Optional
+from typing import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torchvision import transforms
+# from torchvision import transforms
 from tqdm import tqdm
 
-import distributional_diffusion_timeseries.datasets.image_loader as vl
-from distributional_diffusion_timeseries.models.diffusions.schedules import CosineSchedule, KingmaSNRLossWeighting
 
 # Assuming these are available in your project structure
-from distributional_diffusion_timeseries.models.utils import default, right_pad_dims_to
+from data_utils import load_data
+from guided_diffusion.script_util import create_gaussian_diffusion
+
+def exists(val):
+	return val is not None
+
+
+def is_lambda(f):
+	return callable(f)  # and f.__name__ == "<lambda>"
+
+
+def default(val, d, eager=True):
+	if exists(val):
+		return val
+	return d() if is_lambda(d) and eager else d
+	
+def right_pad_dims_to(x, t):
+	padding_dims = x.ndim - t.ndim
+	if padding_dims <= 0:
+		return t
+	return t.view(*t.shape, *((1,) * padding_dims))
 
 
 def estimate_conditional_variance(
@@ -77,16 +96,18 @@ def estimate_conditional_variance(
 	return estimated_mean, estimated_variance
 
 
-def create_log_prob_function_optimized(noise_schedule, t_value, x0_importance_norms_sq, D):
+def create_log_prob_function_optimized(diffusion, t_value, x0_importance_norms_sq, D):
 	"""
 	Creates an optimized p_xt_given_x0_log_prob function that uses matrix
 	multiplication and a pre-computed (cached) component.
 	"""
 	# Using continuous time, t_value is a float from 0 to 1
 	t_tensor = torch.tensor([t_value], device=x0_importance_norms_sq.device)  # Or your device
-	schedule_t = noise_schedule(t_tensor)
-	alpha_t = schedule_t["alpha"].item()
-	sigma_t = schedule_t["sigma"].item()
+	# schedule_t = noise_schedule(t_tensor)
+	# alpha_t = schedule_t["alpha"].item()
+	# sigma_t = schedule_t["sigma"].item()
+	alpha_t = diffusion.sqrt_alphas_cumprod[t_value]
+	sigma_t = diffusion.sqrt_one_minus_alphas_cumprod[t_value]
 
 	# Pre-calculate constant part of the log-pdf
 	# *** FIX: Remove the incorrect line. D is now passed in correctly. ***
@@ -115,20 +136,6 @@ def create_log_prob_function_optimized(noise_schedule, t_value, x0_importance_no
 	return p_xt_given_x0_log_prob_optimized
 
 
-# This is a standalone version of the q_sample method
-def q_sample_standalone(
-	x_0: torch.Tensor,
-	t: torch.Tensor,
-	noise_schedule: CosineSchedule,
-	noise: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-	noise = default(noise, lambda: torch.randn_like(x_0))
-	schedule_t = noise_schedule(t)
-	alpha = right_pad_dims_to(x_0, schedule_t["alpha"])
-	sigma = right_pad_dims_to(x_0, schedule_t["sigma"])
-	x_noised = x_0 * alpha + noise * sigma
-	return x_noised
-
 
 def main():
 	"""
@@ -143,30 +150,60 @@ def main():
 	M_IMPORTANCE = 25000
 	TOTAL_SAMPLES = N_BENCHMARK + M_IMPORTANCE
 	NUM_T_BINS = 50
-	USE_LOSS_WEIGHTING = True
+	
+	USE_LOSS_WEIGHTING = False
 	dataset_name = "cifar10"
 
-	loss_weighting_fn = KingmaSNRLossWeighting()
+	loss_b = 0
+	loss_weighting_fn = lambda logsnr: (1 + (loss_b - logsnr).exp()) ** -1
 
-	dataloader = vl.build_streaming_image_dataloader(
-		datadir=f"/ceph/scratch/martorellat/data/{dataset_name}/mds/train",
-		batch_size=TOTAL_SAMPLES,
-		shuffle=False,
-		image_size=28 if dataset_name == "mnist" else 32,
-		num_channels=1 if dataset_name == "mnist" else 3,
-		transform=[transforms.Grayscale(1), transforms.ToTensor()]
-		if dataset_name == "mnist"
-		else [transforms.ToTensor()],
-	)
+	data = load_data(
+        data_dir="/nfs/ghome/live/martorellat/data/cifar_train",
+        batch_size=TOTAL_SAMPLES,
+        image_size=32,
+        class_cond=True,
+    )
+
+	# dataloader = vl.build_streaming_image_dataloader(
+	# 	datadir=f"/ceph/scratch/martorellat/data/{dataset_name}/mds/train",
+	# 	batch_size=TOTAL_SAMPLES,
+	# 	shuffle=False,
+	# 	image_size=28 if dataset_name == "mnist" else 32,
+	# 	num_channels=1 if dataset_name == "mnist" else 3,
+	# 	transform=[transforms.Grayscale(1), transforms.ToTensor()]
+	# 	if dataset_name == "mnist"
+	# 	else [transforms.ToTensor()],
+	# )
 
 	# --- 2. Instantiate Correct Noise Schedule ---
-	noise_schedule = CosineSchedule()
+	diffusion = create_gaussian_diffusion(
+        learn_sigma=False,
+        steps=4000,
+        noise_schedule="cosine",
+        timestep_respacing="",
+        use_kl=False,
+        predict_xstart=False,
+        rescale_timesteps=False,
+        rescale_learned_sigmas=False,
+        
+        # Distributional loss configuration
+        use_distributional=False,
+        distributional_track_terms_regardless_of_lambda=False, # can be set to False to save memory and compute, True will track all terms even if lambda is 0
+        distributional_kernel="energy",
+        distributional_lambda=1.0,
+        distributional_lambda_weighting="constant",
+        distributional_population_size=4,
+        distributional_kernel_kwargs={"beta": 1.0},
+        distributional_loss_weighting="no_weighting",  # can be "no_weighting" or "kingma_snr"
+        distributional_num_eps_channels=3,
+        dispersion_loss_type="none"
+	)
 
 	# --- 3. Prepare GUARANTEED DISJOINT Data & CACHE ---
 	print(f"Fetching one large batch of {TOTAL_SAMPLES} samples to ensure disjoint sets...")
-	data_iterator = iter(dataloader)
 	try:
-		full_batch = next(data_iterator)["image"].to(DEVICE)
+		full_batch, cond = next(iter(data))
+		full_batch = full_batch.to(DEVICE)
 	except StopIteration:
 		raise ValueError(f"Dataloader could not provide enough samples. Need at least {TOTAL_SAMPLES}.")
 	if full_batch.shape[0] < TOTAL_SAMPLES:
@@ -195,10 +232,10 @@ def main():
 	print("\nStarting variance estimation loop...")
 	for i in tqdm(range(N_BENCHMARK), desc="Estimating Irreducible Variance"):
 		x0 = x0_benchmark_samples[i].unsqueeze(0)
-		t_float = torch.rand(1).item()
+		t_float = torch.randint(0, diffusion.num_timesteps-1, (1,)).item()
 		t_tensor = torch.tensor([t_float], device=DEVICE)
-		xt = q_sample_standalone(x_0=x0, t=t_tensor, noise_schedule=noise_schedule)
-		log_prob_fn = create_log_prob_function_optimized(noise_schedule, t_float, x0_importance_norms_sq, D)
+		xt = diffusion.q_sample(x_start=x0, t=t_tensor)
+		log_prob_fn = create_log_prob_function_optimized(diffusion, t_float, x0_importance_norms_sq, D)
 		_, var_estimate = estimate_conditional_variance(
 			x0_samples=m_importance_samples, xt=xt, p_xt_given_x0_log_prob=log_prob_fn
 		)
@@ -207,13 +244,15 @@ def main():
 		trace_var = torch.sum(var_estimate).item()
 		norm_sq_var = torch.sum(var_estimate.pow(2)).item()
 
-		if USE_LOSS_WEIGHTING:
-			schedule_t = noise_schedule(t_tensor)
-			trace_var = loss_weighting_fn(trace_var, schedule_t).cpu()
-			norm_sq_var = loss_weighting_fn(norm_sq_var, schedule_t).cpu()
+		# if USE_LOSS_WEIGHTING:
+		# 	schedule_t = noise_schedule(t_tensor)
+		# 	trace_var = loss_weighting_fn(trace_var, schedule_t).cpu()
+		# 	norm_sq_var = loss_weighting_fn(norm_sq_var, schedule_t).cpu()
 
 		all_trace_variances.append(trace_var)
 		all_norm_sq_variances.append(norm_sq_var)
+	
+		t_float = t_float / diffusion.num_timesteps  # Normalize t to [0, 1]
 
 		bin_idx = min(int(t_float * NUM_T_BINS), NUM_T_BINS - 1)
 		results_by_bin[bin_idx].append((trace_var, norm_sq_var))
@@ -226,6 +265,9 @@ def main():
 	avg_trace_in_bin = np.array(
 		[np.mean([item[0] for item in results_by_bin[i]]) if results_by_bin[i] else 0 for i in range(NUM_T_BINS)]
 	)
+	std_trace_in_bin = np.array(
+		[np.std([item[0] for item in results_by_bin[i]]) if results_by_bin[i] else 0 for i in range(NUM_T_BINS)]
+	)
 	avg_norm_sq_in_bin = np.array(
 		[np.mean([item[1] for item in results_by_bin[i]]) if results_by_bin[i] else 0 for i in range(NUM_T_BINS)]
 	)
@@ -233,90 +275,103 @@ def main():
 	# --- 6. Visualize the Results ---
 	print("\nGenerating plots...")
 	plt.style.use("seaborn-v0_8-whitegrid")
-	fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(22, 8))
-	fig.suptitle(f"Irreducible Variance Analysis for {dataset_name}", fontsize=20)
+	
+	# fig, axs = plt.subplots(2, 2, figsize=(22, 8))
+	fig, axs = plt.subplots(1, 1, figsize=(22 / 2, 5))
+	axs_flat = [None, None, axs]
+	# axs_flat = axs.flatten()
+	# fig.suptitle(f"Empirical Total Loss Decomposition ({dataset_name})", fontsize=16)
 
-	# Plot 1: Trace of Variance (Directly comparable to MSE Loss)
-	ax1.plot(bin_centers, avg_trace_in_bin, marker="o", linestyle="-", label="Avg. Trace(Var) per Time Bin", zorder=2)
-	ax1.axhline(
-		y=V_irreducible_trace,
-		color="r",
-		linestyle="--",
-		label=f"Overall Avg. Trace(Var) = {V_irreducible_trace:.4f}",
-		zorder=1,
-	)
-	ax1.set_title("Irreducible Loss (Trace of Variance)", fontsize=16)
-	ax1.set_xlabel("Normalized Time (t)", fontsize=12)
-	ax1.set_ylabel("E[Tr(Cov(x₀|xₜ))]", fontsize=14)
-	ax1.legend(fontsize=10)
+	# # Plot 1: Trace of Variance (Directly comparable to MSE Loss)
+	# axs_flat[0].plot(bin_centers, avg_trace_in_bin, marker="o", linestyle="-", label="Avg. Trace(Var) per Time Bin", zorder=2)
+	# axs_flat[0].axhline(
+	# 	y=V_irreducible_trace,
+	# 	color="r",
+	# 	linestyle="--",
+	# 	label=f"Overall Avg. Trace(Var) = {V_irreducible_trace:.4f}",
+	# 	zorder=1,
+	# )
+	# axs_flat[0].set_title("Irreducible Loss (Trace of Variance)", fontsize=16)
+	# axs_flat[0].set_xlabel("Normalized Time (t)", fontsize=12)
+	# axs_flat[0].set_ylabel("E[Tr(Cov(x₀|xₜ))]", fontsize=14)
+	# axs_flat[0].legend(fontsize=10)
 
-	# Plot 2: Squared Norm of Variance
-	ax2.plot(
-		bin_centers,
-		avg_norm_sq_in_bin,
-		marker="o",
-		linestyle="-",
-		color="g",
-		label="Avg. ||Var||² per Time Bin",
-		zorder=2,
-	)
-	ax2.axhline(
-		y=V_irreducible_norm_sq,
-		color="m",
-		linestyle="--",
-		label=f"Overall Avg. ||Var||² = {V_irreducible_norm_sq:.4f}",
-		zorder=1,
-	)
-	ax2.set_title("Magnitude of Uncertainty (Squared Norm of Variance)", fontsize=16)
-	ax2.set_xlabel("Normalized Time (t)", fontsize=12)
-	ax2.set_ylabel("E[||Var(x₀|xₜ)||^2]", fontsize=14)
-	ax2.legend(fontsize=10)
+	# # Plot 2: Squared Norm of Variance
+	# axs_flat[1].plot(
+	# 	bin_centers,
+	# 	avg_norm_sq_in_bin,
+	# 	marker="o",
+	# 	linestyle="-",
+	# 	color="g",
+	# 	label="Avg. ||Var||² per Time Bin",
+	# 	zorder=2,
+	# )
+	# axs_flat[1].axhline(
+	# 	y=V_irreducible_norm_sq,
+	# 	color="m",
+	# 	linestyle="--",
+	# 	label=f"Overall Avg. ||Var||² = {V_irreducible_norm_sq:.4f}",
+	# 	zorder=1,
+	# )
+	# axs_flat[1].set_title("Magnitude of Uncertainty (Squared Norm of Variance)", fontsize=16)
+	# axs_flat[1].set_xlabel("Normalized Time (t)", fontsize=12)
+	# axs_flat[1].set_ylabel("E[||Var(x₀|xₜ)||^2]", fontsize=14)
+	# axs_flat[1].legend(fontsize=10)
 
 	# Plot 3: Trace of Variance (Directly comparable to MSE Loss)
-	ax3.plot(
+	axs_flat[2].plot(
 		bin_centers,
 		avg_trace_in_bin / D,
 		marker="o",
 		linestyle="-",
-		label="Avg. Trace(Var) per Time Bin - normalized per pixel",
+		label="Avg. E[Var(x₀|xₜ))] per Time Bin - normalized per pixel",
 		zorder=2,
+		alpha=0.8,
 	)
-	ax3.axhline(
+	axs_flat[2].fill_between(
+		bin_centers,
+		(avg_trace_in_bin - std_trace_in_bin) / D,
+		(avg_trace_in_bin + std_trace_in_bin) / D,
+		alpha=0.2,
+		color="tab:blue",
+		label="Std. Dev.",
+	)
+	axs_flat[2].axhline(
 		y=V_irreducible_trace / D,
 		color="r",
 		linestyle="--",
-		label=f"Overall Avg. Trace(Var) = {V_irreducible_trace / D:.4f}",
+		label=f"Overall E[Var(x₀|xₜ))] = {V_irreducible_trace / D:.4f}",
 		zorder=1,
 	)
-	ax3.set_title("Irreducible Loss (Trace of Variance)", fontsize=16)
-	ax3.set_xlabel("Normalized Time (t)", fontsize=12)
-	ax3.set_ylabel("E[Tr(Cov(x₀|xₜ))]", fontsize=14)
-	ax3.legend(fontsize=10)
+	axs_flat[2].set_title(f"Empirical Irreducible Variance ({dataset_name})", fontsize=16)
+	axs_flat[2].set_xlabel("Normalized Time (t)", fontsize=12)
+	axs_flat[2].set_ylabel("E[Var(x₀|xₜ))]", fontsize=14)
+	axs_flat[2].legend(fontsize=10, framealpha=1, frameon=True)
 
-	# Plot 4: Squared Norm of Variance
-	ax4.plot(
-		bin_centers,
-		avg_norm_sq_in_bin / D,
-		marker="o",
-		linestyle="-",
-		color="g",
-		label="Avg. ||Var||² per Time Bin",
-		zorder=2,
-	)
-	ax4.axhline(
-		y=V_irreducible_norm_sq / D,
-		color="m",
-		linestyle="--",
-		label=f"Overall Avg. ||Var||² = {V_irreducible_norm_sq / D:.4f}",
-		zorder=1,
-	)
-	ax4.set_title("Magnitude of Uncertainty (Squared Norm of Variance)", fontsize=16)
-	ax4.set_xlabel("Normalized Time (t)", fontsize=12)
-	ax4.set_ylabel("E[||Var(x₀|xₜ)||^2]", fontsize=14)
-	ax4.legend(fontsize=10)
+	# # Plot 4: Squared Norm of Variance
+	# axs_flat[3].plot(
+	# 	bin_centers,
+	# 	avg_norm_sq_in_bin / D,
+	# 	marker="o",
+	# 	linestyle="-",
+	# 	color="g",
+	# 	label="Avg. ||Var||² per Time Bin",
+	# 	zorder=2,
+	# )
+	# axs_flat[3].axhline(
+	# 	y=V_irreducible_norm_sq / D,
+	# 	color="m",
+	# 	linestyle="--",
+	# 	label=f"Overall Avg. ||Var||² = {V_irreducible_norm_sq / D:.4f}",
+	# 	zorder=1,
+	# )
+	# axs_flat[3].set_title("Magnitude of Uncertainty (Squared Norm of Variance)", fontsize=16)
+	# axs_flat[3].set_xlabel("Normalized Time (t)", fontsize=12)
+	# axs_flat[3].set_ylabel("E[||Var(x₀|xₜ)||^2]", fontsize=14)
+	# axs_flat[3].legend(fontsize=10)
 
 	plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-	plt.savefig(f"outputs/variance_analysis_plot_{dataset_name}.png")
+	plt.savefig(f"../outputs/variance_analysis_plot_{dataset_name}.png")
 	plt.show()
 
 	# --- 7. Print Final Results ---
@@ -329,8 +384,10 @@ def main():
 	print(f"\nMagnitude of Uncertainty (Avg. Squared Norm of Variance): {V_irreducible_norm_sq:.4f}")
 	print(" -> This metric quantifies the overall 'spread' of the conditional distribution.")
 
-
+#%%
 if __name__ == "__main__":
 	# To make this script runnable, we call main here.
 	# In a real scenario, you would import and call this function as needed.
 	main()
+
+# %%
