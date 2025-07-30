@@ -31,7 +31,7 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="cifar10_cond_distributional_noweighting_eps_pred_without_sigma_full_batch"
+export EXPERIMENT_NAME="cifar10_cond_distributional_noweighting_eps_pred_without_sigma_better_channels"
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/blobs_$EXPERIMENT_NAME"
@@ -49,17 +49,18 @@ if [ "$LOCAL_MODE" = true ]; then
         --data_dir $DATA_PATH \
         --image_size 32 \
         --num_classes 10 \
-        --num_channels 128 \
+        --num_channels 192 \
         --num_res_blocks 3 \
         --class_cond True \
         --lr 1e-4 \
-        --batch_size 256 \
+        --batch_size $((256 / $POPULATION_SIZE)) \
         --dropout 0.3 \
         --diffusion_steps 4000 \
         --noise_schedule cosine \
         --use_distributional True \
         --distributional_loss_weighting NO_WEIGHTING \
-        --distributional_population_size $POPULATION_SIZE
+        --distributional_population_size $POPULATION_SIZE \
+        --distributional_num_eps_channels 1
 
 else
     echo "Running in SLURM mode with $SLURM_GPUS_ON_NODE GPUs"
@@ -67,17 +68,17 @@ else
         --data_dir $DATA_PATH \
         --image_size 32 \
         --num_classes 10 \
-        --num_channels 128 \
+        --num_channels 192 \
         --num_res_blocks 3 \
         --class_cond True \
         --lr 1e-4 \
-        --batch_size $((256 / $SLURM_GPUS_ON_NODE)) \
-        --microbatch 128 \
+        --batch_size $(((256 / $POPULATION_SIZE) / $SLURM_GPUS_ON_NODE)) \
         --dropout 0.3 \
         --diffusion_steps 4000 \
         --noise_schedule cosine \
         --use_distributional True \
         --distributional_loss_weighting NO_WEIGHTING \
-        --distributional_population_size $POPULATION_SIZE
+        --distributional_population_size $POPULATION_SIZE \
+        --distributional_num_eps_channels 1
 
 fi

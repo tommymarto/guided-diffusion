@@ -445,11 +445,19 @@ class UNetModel(nn.Module):
         use_scale_shift_norm=False,
         resblock_updown=False,
         use_new_attention_order=False,
+        use_distributional=False,
+        distributional_num_eps_channels=1
     ):
         super().__init__()
 
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
+            
+        self.use_distributional = use_distributional
+        self.distributional_num_eps_channels = distributional_num_eps_channels
+        if use_distributional:
+            in_channels += distributional_num_eps_channels
+            out_channels += distributional_num_eps_channels
 
         self.image_size = image_size
         self.in_channels = in_channels
@@ -644,6 +652,12 @@ class UNetModel(nn.Module):
         assert (y is not None) == (
             self.num_classes is not None
         ), "must specify y if and only if the model is class-conditional"
+        assert (eps is not None) == (
+            self.use_distributional
+        ), "eps must be specified if and only if the model is distributional"
+        assert (eps is None) or (
+            eps.shape[1] == self.distributional_num_eps_channels
+        ), f"eps should have {self.distributional_num_eps_channels} channels, got {eps.shape[1]}"
         
         if eps is not None:
             x = th.cat([x, eps], dim=1)
@@ -667,9 +681,15 @@ class UNetModel(nn.Module):
             h = module(h, emb)
             acts.append(h)
         h = h.type(x.dtype)
+        
+        output = self.out(h)
+        if eps is not None:
+            # remove channels added at the beginning
+            output = output[:, :-self.distributional_num_eps_channels, ...]
+        
         if return_acts:
-            return self.out(h), acts
-        return self.out(h)
+            return output, acts
+        return output
 
 
 class SuperResModel(UNetModel):

@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=sit-training
-#SBATCH --partition=gpu_lowp  # Specify the partition name
+#SBATCH --partition=gpu  # Specify the partition name
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
+#SBATCH --ntasks-per-node=3
 #SBATCH --cpus-per-task=8         # Adjust based on your needs
-#SBATCH --gres=gpu:h100:2               # Number of GPUs per node
+#SBATCH --gres=gpu:a4500:3               # Number of GPUs per node
 #SBATCH --mem=48G                  # Adjust based on your needs
-#SBATCH --time=24:00:00            # Adjust based on your needs
+#SBATCH --time=48:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
 #SBATCH --error=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.err
 
