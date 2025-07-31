@@ -84,9 +84,7 @@ def create_argparser():
     add_dict_to_argparser(parser, defaults)
     return parser
 
-
-if __name__ == "__main__":
-    # main(create_argparser().parse_args())
+def plot_final_figure():
     exp_name = [
         "cifar10_uncond_openai",
         "cifar10_cond_openai",
@@ -108,3 +106,6 @@ if __name__ == "__main__":
         plot_out="/ceph/scratch/martorellat/guided_diffusion/figures",
     ))
     main(args)
+
+if __name__ == "__main__":
+    main(create_argparser().parse_args())
