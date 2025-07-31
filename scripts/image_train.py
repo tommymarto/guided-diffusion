@@ -50,7 +50,7 @@ def main():
     if dist.get_rank() == 0:     
         entity = os.environ["ENTITY"]
         project = os.environ["PROJECT"]
-        experiment_name = f"{datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')}-{os.environ['EXPERIMENT_NAME']}"
+        experiment_name = os.environ['EXPERIMENT_NAME']
         wandb_utils.initialize(args, entity, experiment_name, project)
 
     logger.log("training...")

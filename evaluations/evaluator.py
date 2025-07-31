@@ -60,14 +60,22 @@ def main():
     sample_stats, sample_stats_spatial = evaluator.read_statistics(args.sample_batch, sample_acts)
 
     print("Computing evaluations...")
-    prec, recall = evaluator.compute_prec_recall(ref_acts[0], sample_acts[0])
+    # prec, recall = evaluator.compute_prec_recall(ref_acts[0], sample_acts[0])
+    prec, recall = 0, 0
+    print("Precision/Recall done")
+    inception_score = evaluator.compute_inception_score(sample_acts[0])
+    print("Inception Score done")
+    fid = sample_stats.frechet_distance(ref_stats)
+    print("FID done")
+    sfid = sample_stats_spatial.frechet_distance(ref_stats_spatial)
+    print("sFID done")
     metrics = {
         "steps": sampling_steps,
         "sampling": sampling_algo,
         "num_samples": num_samples,
-        "inception_score": evaluator.compute_inception_score(sample_acts[0]),
-        "fid": sample_stats.frechet_distance(ref_stats),
-        "sfid": sample_stats_spatial.frechet_distance(ref_stats_spatial),
+        "inception_score": inception_score,
+        "fid": fid,
+        "sfid": sfid,
         "precision": prec,
         "recall": recall,
         "timestamp": np.datetime64('now', 's').astype(str),

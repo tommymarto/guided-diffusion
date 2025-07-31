@@ -1,6 +1,7 @@
 import copy
 import functools
 import os
+import time
 
 import blobfile as bf
 from guided_diffusion import wandb_utils
@@ -18,6 +19,10 @@ from .resample import LossAwareSampler, UniformSampler
 # We found that the lg_loss_scale quickly climbed to
 # 20-21 within the first ~1K steps of training.
 INITIAL_LOG_LOSS_SCALE = 20.0
+
+th.backends.cuda.matmul.allow_tf32 = True
+th.backends.cudnn.allow_tf32 = True
+th.backends.cudnn.benchmark = True  # 3-5% speedup
 
 
 class TrainLoop:
@@ -183,6 +188,8 @@ class TrainLoop:
             device=dist_util.dev(),
         )
         just_starting = True
+        if dist.get_rank() == 0:
+            last_log_time = time.time()
         
         while (
             (not self.lr_anneal_steps
@@ -196,8 +203,22 @@ class TrainLoop:
             if self.step % self.log_interval == 0:
                 stats = logger.dumpkvs()
                 if dist.get_rank() == 0:
-                    wandb_utils.log(stats, step=self.step)
-            if self.step % self.save_interval == 0:
+                    # Calculate steps per second and time to complete
+                    now = time.time()
+                    elapsed = now - last_log_time
+                    if elapsed > 0:
+                        steps_per_second = self.log_interval / elapsed
+                        stats["steps_per_second"] = steps_per_second
+                        
+                        remaining_steps = self.max_steps - (self.step + self.resume_step)
+                        if self.max_steps and remaining_steps > 0:
+                            time_to_complete = remaining_steps / steps_per_second
+                            stats["time_to_complete"] = time_to_complete
+                    
+                    last_log_time = now
+                    
+                    wandb_utils.log(stats, step=self.step + self.resume_step)
+            if self.step % self.save_interval == 0 and not just_starting:
                 self.save()
                 # Run for a finite amount of time in integration tests.
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
@@ -351,10 +372,11 @@ def find_resume_checkpoint():
     # On your infrastructure, you may want to override this to automatically
     # discover the latest checkpoint on your blob storage, etc.
     checkpoints_dir = os.getenv("OPENAI_BLOBDIR", logger.get_dir())
-    if not checkpoints_dir:
+    if not checkpoints_dir or not bf.exists(checkpoints_dir):
         return None
     checkpoints = [
-        f for f in os.listdir(checkpoints_dir) if f.startswith("model") and f.endswith(".pt")
+        f for f in os.listdir(checkpoints_dir) if
+        f.startswith("model") and f.endswith(".pt") and (parse_resume_step_from_filename(f) > 0)
     ]
     if len(checkpoints) == 0:
         return None

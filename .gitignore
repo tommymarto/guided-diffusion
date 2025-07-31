@@ -7,3 +7,4 @@ guided_diffusion.egg-info
 wandb
 logs
 outputs
+experiments/old

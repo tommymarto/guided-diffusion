@@ -2,6 +2,8 @@ from abc import abstractmethod
 
 import math
 
+from einops import rearrange
+
 import numpy as np
 import torch as th
 import torch.nn as nn
@@ -270,6 +272,10 @@ class AttentionBlock(nn.Module):
         num_heads=1,
         num_head_channels=-1,
         use_checkpoint=False,
+        attention_type="flash",
+        encoder_channels=None,
+        dims=2,
+        channels_last=False,
         use_new_attention_order=False,
     ):
         super().__init__()
@@ -283,26 +289,88 @@ class AttentionBlock(nn.Module):
             self.num_heads = channels // num_head_channels
         self.use_checkpoint = use_checkpoint
         self.norm = normalization(channels)
-        self.qkv = conv_nd(1, channels, channels * 3, 1)
-        if use_new_attention_order:
-            # split qkv before split heads
-            self.attention = QKVAttention(self.num_heads)
+        self.qkv = conv_nd(dims, channels, channels * 3, 1)
+        self.attention_type = attention_type
+        if attention_type == "flash":
+            self.attention = QKVFlashAttention(channels, self.num_heads)
         else:
             # split heads before split qkv
             self.attention = QKVAttentionLegacy(self.num_heads)
 
-        self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
+        self.use_attention_checkpoint = not (
+            self.use_checkpoint or self.attention_type == "flash"
+        )
+        if encoder_channels is not None:
+            assert attention_type != "flash"
+            self.encoder_kv = conv_nd(1, encoder_channels, channels * 2, 1)
+        self.proj_out = zero_module(conv_nd(dims, channels, channels, 1))
 
-    def forward(self, x):
-        return checkpoint(self._forward, (x,), self.parameters(), True)
+    def forward(self, x, encoder_out=None):
+        if encoder_out is None:
+            return checkpoint(
+                self._forward, (x,), self.parameters(), self.use_checkpoint
+            )
+        else:
+            return checkpoint(
+                self._forward, (x, encoder_out), self.parameters(), self.use_checkpoint
+            )
 
-    def _forward(self, x):
-        b, c, *spatial = x.shape
-        x = x.reshape(b, c, -1)
-        qkv = self.qkv(self.norm(x))
-        h = self.attention(qkv)
+    def _forward(self, x, encoder_out=None):
+        b, _, *spatial = x.shape
+        qkv = self.qkv(self.norm(x)).view(b, -1, np.prod(spatial))
+        if encoder_out is not None:
+            encoder_out = self.encoder_kv(encoder_out)
+            h = checkpoint(
+                self.attention, (qkv, encoder_out), (), self.use_attention_checkpoint
+            )
+        else:
+            h = checkpoint(self.attention, (qkv,), (), self.use_attention_checkpoint)
+        h = h.view(b, -1, *spatial)
         h = self.proj_out(h)
-        return (x + h).reshape(b, c, *spatial)
+        return x + h
+
+
+class QKVFlashAttention(nn.Module):
+    def __init__(
+        self,
+        embed_dim,
+        num_heads,
+        batch_first=True,
+        attention_dropout=0.0,
+        causal=False,
+        device=None,
+        dtype=None,
+        **kwargs,
+    ) -> None:
+        from flash_attn import flash_attn_qkvpacked_func
+
+        assert batch_first
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.causal = causal
+        self.attention_dropout = attention_dropout
+
+        assert (
+            self.embed_dim % num_heads == 0
+        ), "self.kdim must be divisible by num_heads"
+        self.head_dim = self.embed_dim // num_heads
+        assert self.head_dim in [16, 32, 64], "Only support head_dim == 16, 32, or 64"
+
+        self.inner_attn = flash_attn_qkvpacked_func
+
+    def forward(self, qkv, attn_mask=None, key_padding_mask=None, need_weights=False):
+        assert key_padding_mask is None, "key_padding_mask is not used by flash_attn_qkvpacked_func. Your model may produce incorrect results if padding is present."
+        qkv = rearrange(
+            qkv, "b (three h d) s -> b s three h d", three=3, h=self.num_heads
+        ).contiguous()
+        qkv = self.inner_attn(
+            qkv,
+            dropout_p=self.attention_dropout if self.training else 0.0,
+            causal=self.causal,
+        )
+        return rearrange(qkv, "b s h d -> b (h d) s").contiguous()
 
 
 def count_flops_attn(model, _x, y):
@@ -321,18 +389,21 @@ def count_flops_attn(model, _x, y):
     # We perform two matmuls with the same number of ops.
     # The first computes the weight matrix, the second computes
     # the combination of the value vectors.
-    matmul_ops = 2 * b * (num_spatial ** 2) * c
+    matmul_ops = 2 * b * (num_spatial**2) * c
     model.total_ops += th.DoubleTensor([matmul_ops])
 
 
 class QKVAttentionLegacy(nn.Module):
     """
-    A module which performs QKV attention. Matches legacy QKVAttention + input/ouput heads shaping
+    A module which performs QKV attention. Matches legacy QKVAttention + input/output heads shaping
     """
 
     def __init__(self, n_heads):
         super().__init__()
         self.n_heads = n_heads
+        from einops import rearrange
+        self.rearrange = rearrange
+
 
     def forward(self, qkv):
         """
@@ -344,13 +415,23 @@ class QKVAttentionLegacy(nn.Module):
         bs, width, length = qkv.shape
         assert width % (3 * self.n_heads) == 0
         ch = width // (3 * self.n_heads)
-        q, k, v = qkv.reshape(bs * self.n_heads, ch * 3, length).split(ch, dim=1)
+        qkv = qkv.half()
+
+        qkv =   self.rearrange(
+            qkv, "b (three h d) s -> b s three h d", three=3, h=self.n_heads
+        ) 
+        q, k, v = qkv.transpose(1, 3).transpose(3, 4).split(1, dim=2)
+        q = q.reshape(bs*self.n_heads, ch, length)
+        k = k.reshape(bs*self.n_heads, ch, length)
+        v = v.reshape(bs*self.n_heads, ch, length)
+
         scale = 1 / math.sqrt(math.sqrt(ch))
         weight = th.einsum(
             "bct,bcs->bts", q * scale, k * scale
         )  # More stable with f16 than dividing afterwards
-        weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
+        weight = th.softmax(weight, dim=-1).type(weight.dtype)
         a = th.einsum("bts,bcs->bct", weight, v)
+        a = a.float()
         return a.reshape(bs, -1, length)
 
     @staticmethod
@@ -358,16 +439,51 @@ class QKVAttentionLegacy(nn.Module):
         return count_flops_attn(model, _x, y)
 
 
+# class QKVAttention(nn.Module):
+#     """
+#     A module which performs QKV attention and splits in a different order.
+#     """
+
+#     def __init__(self, n_heads):
+#         super().__init__()
+#         self.n_heads = n_heads
+
+#     def forward(self, qkv):
+#         """
+#         Apply QKV attention.
+
+#         :param qkv: an [N x (3 * H * C) x T] tensor of Qs, Ks, and Vs.
+#         :return: an [N x (H * C) x T] tensor after attention.
+#         """
+#         bs, width, length = qkv.shape
+#         assert width % (3 * self.n_heads) == 0
+#         ch = width // (3 * self.n_heads)
+#         q, k, v = qkv.chunk(3, dim=1)
+#         scale = 1 / math.sqrt(math.sqrt(ch))
+#         weight = th.einsum(
+#             "bct,bcs->bts",
+#             (q * scale).view(bs * self.n_heads, ch, length),
+#             (k * scale).view(bs * self.n_heads, ch, length),
+#         )  # More stable with f16 than dividing afterwards
+#         weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
+#         a = th.einsum("bts,bcs->bct", weight, v.reshape(bs * self.n_heads, ch, length))
+#         return a.reshape(bs, -1, length)
+
+#     @staticmethod
+#     def count_flops(model, _x, y):
+#         return count_flops_attn(model, _x, y)
+
+
 class QKVAttention(nn.Module):
     """
-    A module which performs QKV attention and splits in a different order.
+    A module which performs QKV attention. Fallback from Blocksparse if use_fp16=False
     """
 
     def __init__(self, n_heads):
         super().__init__()
         self.n_heads = n_heads
 
-    def forward(self, qkv):
+    def forward(self, qkv, encoder_kv=None):
         """
         Apply QKV attention.
 
@@ -378,14 +494,19 @@ class QKVAttention(nn.Module):
         assert width % (3 * self.n_heads) == 0
         ch = width // (3 * self.n_heads)
         q, k, v = qkv.chunk(3, dim=1)
+        if encoder_kv is not None:
+            assert encoder_kv.shape[1] == 2 * ch * self.n_heads
+            ek, ev = encoder_kv.chunk(2, dim=1)
+            k = th.cat([ek, k], dim=-1)
+            v = th.cat([ev, v], dim=-1)
         scale = 1 / math.sqrt(math.sqrt(ch))
         weight = th.einsum(
             "bct,bcs->bts",
             (q * scale).view(bs * self.n_heads, ch, length),
-            (k * scale).view(bs * self.n_heads, ch, length),
+            (k * scale).view(bs * self.n_heads, ch, -1),
         )  # More stable with f16 than dividing afterwards
         weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
-        a = th.einsum("bts,bcs->bct", weight, v.reshape(bs * self.n_heads, ch, length))
+        a = th.einsum("bts,bcs->bct", weight, v.reshape(bs * self.n_heads, ch, -1))
         return a.reshape(bs, -1, length)
 
     @staticmethod
@@ -690,234 +811,3 @@ class UNetModel(nn.Module):
         if return_acts:
             return output, acts
         return output
-
-
-class SuperResModel(UNetModel):
-    """
-    A UNetModel that performs super-resolution.
-
-    Expects an extra kwarg `low_res` to condition on a low-resolution image.
-    """
-
-    def __init__(self, image_size, in_channels, *args, **kwargs):
-        super().__init__(image_size, in_channels * 2, *args, **kwargs)
-
-    def forward(self, x, timesteps, low_res=None, **kwargs):
-        _, _, new_height, new_width = x.shape
-        upsampled = F.interpolate(low_res, (new_height, new_width), mode="bilinear")
-        x = th.cat([x, upsampled], dim=1)
-        return super().forward(x, timesteps, **kwargs)
-
-
-class EncoderUNetModel(nn.Module):
-    """
-    The half UNet model with attention and timestep embedding.
-
-    For usage, see UNet.
-    """
-
-    def __init__(
-        self,
-        image_size,
-        in_channels,
-        model_channels,
-        out_channels,
-        num_res_blocks,
-        attention_resolutions,
-        dropout=0,
-        channel_mult=(1, 2, 4, 8),
-        conv_resample=True,
-        dims=2,
-        use_checkpoint=False,
-        use_fp16=False,
-        num_heads=1,
-        num_head_channels=-1,
-        num_heads_upsample=-1,
-        use_scale_shift_norm=False,
-        resblock_updown=False,
-        use_new_attention_order=False,
-        pool="adaptive",
-    ):
-        super().__init__()
-
-        if num_heads_upsample == -1:
-            num_heads_upsample = num_heads
-
-        self.in_channels = in_channels
-        self.model_channels = model_channels
-        self.out_channels = out_channels
-        self.num_res_blocks = num_res_blocks
-        self.attention_resolutions = attention_resolutions
-        self.dropout = dropout
-        self.channel_mult = channel_mult
-        self.conv_resample = conv_resample
-        self.use_checkpoint = use_checkpoint
-        self.dtype = th.float16 if use_fp16 else th.float32
-        self.num_heads = num_heads
-        self.num_head_channels = num_head_channels
-        self.num_heads_upsample = num_heads_upsample
-
-        time_embed_dim = model_channels * 4
-        self.time_embed = nn.Sequential(
-            linear(model_channels, time_embed_dim),
-            nn.SiLU(),
-            linear(time_embed_dim, time_embed_dim),
-        )
-
-        ch = int(channel_mult[0] * model_channels)
-        self.input_blocks = nn.ModuleList(
-            [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))]
-        )
-        self._feature_size = ch
-        input_block_chans = [ch]
-        ds = 1
-        for level, mult in enumerate(channel_mult):
-            for _ in range(num_res_blocks):
-                layers = [
-                    ResBlock(
-                        ch,
-                        time_embed_dim,
-                        dropout,
-                        out_channels=int(mult * model_channels),
-                        dims=dims,
-                        use_checkpoint=use_checkpoint,
-                        use_scale_shift_norm=use_scale_shift_norm,
-                    )
-                ]
-                ch = int(mult * model_channels)
-                if ds in attention_resolutions:
-                    layers.append(
-                        AttentionBlock(
-                            ch,
-                            use_checkpoint=use_checkpoint,
-                            num_heads=num_heads,
-                            num_head_channels=num_head_channels,
-                            use_new_attention_order=use_new_attention_order,
-                        )
-                    )
-                self.input_blocks.append(TimestepEmbedSequential(*layers))
-                self._feature_size += ch
-                input_block_chans.append(ch)
-            if level != len(channel_mult) - 1:
-                out_ch = ch
-                self.input_blocks.append(
-                    TimestepEmbedSequential(
-                        ResBlock(
-                            ch,
-                            time_embed_dim,
-                            dropout,
-                            out_channels=out_ch,
-                            dims=dims,
-                            use_checkpoint=use_checkpoint,
-                            use_scale_shift_norm=use_scale_shift_norm,
-                            down=True,
-                        )
-                        if resblock_updown
-                        else Downsample(
-                            ch, conv_resample, dims=dims, out_channels=out_ch
-                        )
-                    )
-                )
-                ch = out_ch
-                input_block_chans.append(ch)
-                ds *= 2
-                self._feature_size += ch
-
-        self.middle_block = TimestepEmbedSequential(
-            ResBlock(
-                ch,
-                time_embed_dim,
-                dropout,
-                dims=dims,
-                use_checkpoint=use_checkpoint,
-                use_scale_shift_norm=use_scale_shift_norm,
-            ),
-            AttentionBlock(
-                ch,
-                use_checkpoint=use_checkpoint,
-                num_heads=num_heads,
-                num_head_channels=num_head_channels,
-                use_new_attention_order=use_new_attention_order,
-            ),
-            ResBlock(
-                ch,
-                time_embed_dim,
-                dropout,
-                dims=dims,
-                use_checkpoint=use_checkpoint,
-                use_scale_shift_norm=use_scale_shift_norm,
-            ),
-        )
-        self._feature_size += ch
-        self.pool = pool
-        if pool == "adaptive":
-            self.out = nn.Sequential(
-                normalization(ch),
-                nn.SiLU(),
-                nn.AdaptiveAvgPool2d((1, 1)),
-                zero_module(conv_nd(dims, ch, out_channels, 1)),
-                nn.Flatten(),
-            )
-        elif pool == "attention":
-            assert num_head_channels != -1
-            self.out = nn.Sequential(
-                normalization(ch),
-                nn.SiLU(),
-                AttentionPool2d(
-                    (image_size // ds), ch, num_head_channels, out_channels
-                ),
-            )
-        elif pool == "spatial":
-            self.out = nn.Sequential(
-                nn.Linear(self._feature_size, 2048),
-                nn.ReLU(),
-                nn.Linear(2048, self.out_channels),
-            )
-        elif pool == "spatial_v2":
-            self.out = nn.Sequential(
-                nn.Linear(self._feature_size, 2048),
-                normalization(2048),
-                nn.SiLU(),
-                nn.Linear(2048, self.out_channels),
-            )
-        else:
-            raise NotImplementedError(f"Unexpected {pool} pooling")
-
-    def convert_to_fp16(self):
-        """
-        Convert the torso of the model to float16.
-        """
-        self.input_blocks.apply(convert_module_to_f16)
-        self.middle_block.apply(convert_module_to_f16)
-
-    def convert_to_fp32(self):
-        """
-        Convert the torso of the model to float32.
-        """
-        self.input_blocks.apply(convert_module_to_f32)
-        self.middle_block.apply(convert_module_to_f32)
-
-    def forward(self, x, timesteps):
-        """
-        Apply the model to an input batch.
-
-        :param x: an [N x C x ...] Tensor of inputs.
-        :param timesteps: a 1-D batch of timesteps.
-        :return: an [N x K] Tensor of outputs.
-        """
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-
-        results = []
-        h = x.type(self.dtype)
-        for module in self.input_blocks:
-            h = module(h, emb)
-            if self.pool.startswith("spatial"):
-                results.append(h.type(x.dtype).mean(dim=(2, 3)))
-        h = self.middle_block(h, emb)
-        if self.pool.startswith("spatial"):
-            results.append(h.type(x.dtype).mean(dim=(2, 3)))
-            h = th.cat(results, axis=-1)
-            return self.out(h)
-        else:
-            h = h.type(x.dtype)
-            return self.out(h)

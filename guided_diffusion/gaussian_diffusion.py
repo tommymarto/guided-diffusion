@@ -173,6 +173,7 @@ class GaussianDiffusion:
         distributional_kernel="energy",
         distributional_lambda=1.0,
         distributional_lambda_weighting="constant",
+        distributional_beta_schedule="constant",
         distributional_population_size=4,
         distributional_kernel_kwargs={"beta": 1.0},
         distributional_loss_weighting=LossWeighting("NO_WEIGHTING"),

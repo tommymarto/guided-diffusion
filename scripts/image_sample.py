@@ -125,6 +125,7 @@ def timestamp_sample(
         model_kwargs["y"] = repeat(model_kwargs["y"], 'b -> (b t)', t=t_forward.shape[1]).to(device)
     if diffusion.use_distributional:
         eps = th.randn_like(imgs)
+        eps = eps[:, :diffusion.distributional_num_eps_channels, ...]
         model_kwargs["eps"] = repeat(eps, 'b ... -> (b t) ...', t=t_forward.shape[1]).to(device)
 
     x_t_forward = diffusion.q_sample(imgs_forward, t_forward, noise=noise_forward)
