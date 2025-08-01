@@ -46,6 +46,7 @@ class HumanOutputFormat(KVWriter, SeqWriter):
             self.own_file = False
 
     def writekvs(self, kvs):
+        return
         # Create strings for printing
         key2str = {}
         for (key, val) in sorted(kvs.items()):
@@ -117,6 +118,7 @@ class CSVOutputFormat(KVWriter):
         self.sep = ","
 
     def writekvs(self, kvs):
+        return
         # Add our current row to the history
         extra_keys = list(kvs.keys() - self.keys)
         extra_keys.sort()

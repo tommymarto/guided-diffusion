@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=dnwf____
-#SBATCH --partition=gpu_lowp  # Specify the partition name
+#SBATCH --job-name=dnw_b_ld
+#SBATCH --partition=a100  # Specify the partition name
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=4         # Adjust based on your needs
-#SBATCH --gres=gpu:h100:1               # Number of GPUs per node
+#SBATCH --cpus-per-task=6         # Adjust based on your needs
+#SBATCH --gres=gpu:a100:1               # Number of GPUs per node
 #SBATCH --mem=48G                  # Adjust based on your needs
 #SBATCH --time=48:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
@@ -46,7 +46,7 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="cifar10_cond_distributional_noweighting_without_sigma_full_batch"
+export EXPERIMENT_NAME="cifar10_cond_distributional_noweighting_without_sigma_better_channels_even_smaller_lambda"
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/blobs_$EXPERIMENT_NAME"
@@ -64,15 +64,16 @@ if [ "$LOCAL_MODE" = true ]; then
         --data_dir $DATA_PATH \
         --image_size 32 \
         --num_classes 10 \
-        --num_channels 128 \
+        --num_channels 192 \
         --num_res_blocks 3 \
         --class_cond True \
         --lr 1e-4 \
-        --batch_size 128 \
+        --batch_size $((128 / $POPULATION_SIZE)) \
         --dropout 0.3 \
         --diffusion_steps 4000 \
         --noise_schedule cosine \
         --use_distributional True \
+        --distributional_lambda 0.1 \
         --distributional_loss_weighting NO_WEIGHTING \
         --distributional_population_size $POPULATION_SIZE \
         --distributional_num_eps_channels 1 \
@@ -81,27 +82,25 @@ if [ "$LOCAL_MODE" = true ]; then
 
 else
     echo "Running in SLURM mode with $SLURM_GPUS_ON_NODE GPUs"
-    # export UCX_TLS=tcp,sm
-        # -x UCX_TLS \
     mpiexec -n $SLURM_GPUS_ON_NODE -x LD_LIBRARY_PATH -x CUDA_HOME \
         uv run ./scripts/image_train.py \
             --data_dir $DATA_PATH \
             --image_size 32 \
             --num_classes 10 \
-            --num_channels 128 \
+            --num_channels 192 \
             --num_res_blocks 3 \
             --class_cond True \
             --lr 1e-4 \
-            --batch_size $((128 / $SLURM_GPUS_ON_NODE)) \
+            --batch_size $(((128 / $POPULATION_SIZE) / $SLURM_GPUS_ON_NODE)) \
             --dropout 0.3 \
             --diffusion_steps 4000 \
             --noise_schedule cosine \
             --use_distributional True \
+            --distributional_lambda 0.1 \
             --distributional_loss_weighting NO_WEIGHTING \
             --distributional_population_size $POPULATION_SIZE \
             --distributional_num_eps_channels 1 \
             --num_head_channels 64 \
-            --use_fp16 True \
-            --max_steps 1000000
+            --use_fp16 True
 
 fi

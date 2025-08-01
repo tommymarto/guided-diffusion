@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=dnw_bc__
+#SBATCH --job-name=dnw_b_ld
 #SBATCH --partition=gpu_lowp  # Specify the partition name
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
+#SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=6         # Adjust based on your needs
-#SBATCH --gres=gpu:h100:2               # Number of GPUs per node
+#SBATCH --gres=gpu:h100:1               # Number of GPUs per node
 #SBATCH --mem=48G                  # Adjust based on your needs
 #SBATCH --time=48:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
@@ -46,7 +46,7 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="cifar10_cond_distributional_noweighting_without_sigma_better_channels_lambda_cosine"
+export EXPERIMENT_NAME="cifar10_cond_distributional_noweighting_without_sigma_better_channels_smaller_lambda"
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/blobs_$EXPERIMENT_NAME"
@@ -73,10 +73,9 @@ if [ "$LOCAL_MODE" = true ]; then
         --diffusion_steps 4000 \
         --noise_schedule cosine \
         --use_distributional True \
+        --distributional_lambda 0.5 \
         --distributional_loss_weighting NO_WEIGHTING \
         --distributional_population_size $POPULATION_SIZE \
-        --distributional_lambda_weighting cosine \
-        --distributional_beta_schedule cosine \
         --distributional_num_eps_channels 1 \
         --num_head_channels 64 \
         --use_fp16 True
@@ -97,10 +96,9 @@ else
             --diffusion_steps 4000 \
             --noise_schedule cosine \
             --use_distributional True \
+            --distributional_lambda 0.5 \
             --distributional_loss_weighting NO_WEIGHTING \
             --distributional_population_size $POPULATION_SIZE \
-            --distributional_lambda_weighting cosine \
-            --distributional_beta_schedule cosine \
             --distributional_num_eps_channels 1 \
             --num_head_channels 64 \
             --use_fp16 True

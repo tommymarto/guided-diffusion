@@ -1,3 +1,4 @@
+from copy import deepcopy
 import logging
 import math
 import abc
@@ -5,13 +6,19 @@ from typing import Callable, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from einops import reduce
+from einops import reduce, repeat
 
 
 logger = logging.getLogger(__name__)
 
+def right_pad_dims_to(x, t):
+	padding_dims = x.ndim - t.ndim
+	if padding_dims <= 0:
+		return t
+	return t.view(*t.shape, *((1,) * padding_dims))
 
-def energy_kernel(x: torch.Tensor, x_prime: torch.Tensor, beta: float, norm_dim: int = 1) -> torch.Tensor:
+
+def energy_kernel(x: torch.Tensor, x_prime: torch.Tensor, beta: float, norm_dim: int = 1, **kwargs) -> torch.Tensor:
     """
     Computes the energy kernel, ||x - x'||^beta, in a generalized and stable way.
 
@@ -33,16 +40,14 @@ def energy_kernel(x: torch.Tensor, x_prime: torch.Tensor, beta: float, norm_dim:
     # The exponent in the general formula: (||x - x'||²)^(β/2)
     exponent = beta / 2.0
 
-    # For exponents between 0 and 1 (i.e., 0 < beta < 2), the gradient of pow(z, exponent)
-    # For other exponents (beta <= 0 or beta >= 2), the gradient is well-behaved.
-    if 0 < exponent < 1:
-        # A small constant to ensure the base is non-zero
-        eps = torch.tensor(1e-9, device=squared_norm.device, dtype=squared_norm.dtype)
-        stable_base = squared_norm + eps
-        return torch.pow(stable_base, exponent)
-    else:
-        # This single line correctly handles beta=2, beta=0, and all beta > 2 cases.
-        return torch.pow(squared_norm, exponent)
+    # Unconditionally add epsilon
+    eps = torch.tensor(1e-9, device=squared_norm.device, dtype=squared_norm.dtype)
+    stable_base = squared_norm + eps
+    
+    if isinstance(exponent, torch.Tensor):
+        exponent = right_pad_dims_to(exponent, stable_base)
+    
+    return torch.pow(stable_base, exponent)
 
 
 def rbf_kernel(x: torch.Tensor, x_prime: torch.Tensor, sigma_squared: float, norm_dim: int = 1) -> torch.Tensor:
@@ -146,6 +151,7 @@ class GeneralizedKernelScore(nn.Module):
         kernel_function: Callable,
         lambda_val: float,
         lambda_weighting_function: Callable,
+        beta_schedule: Callable,
         population_size: int,
         kernel_kwargs: dict,
         track_terms_regardless_of_lambda: bool,
@@ -156,6 +162,7 @@ class GeneralizedKernelScore(nn.Module):
         self.kernel_function = kernel_function
         self.lambda_val = lambda_val
         self.lambda_weighting = lambda_weighting_function
+        self.beta_schedule = beta_schedule
         self.track_terms_regardless_of_lambda = track_terms_regardless_of_lambda
 
         assert isinstance(population_size, int) and population_size >= 0, (
@@ -169,6 +176,8 @@ class GeneralizedKernelScore(nn.Module):
             raise ValueError(
                 "kernel_kwargs must contain either both 'interaction_term' and 'confinement_term' or neither."
             )
+        self.interaction_kwargs = self.kernel_kwargs["interaction_term"] if "interaction_term" in self.kernel_kwargs else self.kernel_kwargs
+        self.confinement_kwargs = self.kernel_kwargs["confinement_term"] if "confinement_term" in self.kernel_kwargs else self.kernel_kwargs
 
         self.use_scoring_rule_self_rebalancing = (
             self.kernel_kwargs["norm_based_rebalancing"]["enabled"]
@@ -201,7 +210,7 @@ class GeneralizedKernelScore(nn.Module):
         self.register_buffer("selected_j", selected_j_tensor)
         self.register_buffer("selected_j_prime", selected_j_prime_tensor)
 
-    def compute_rho(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def compute_rho(self, x: torch.Tensor, y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         m: int = self.population_size  # Python constant
         n: int = x.shape[0]  # Batch size, can be symbolic
 
@@ -219,7 +228,9 @@ class GeneralizedKernelScore(nn.Module):
         y_for_kernel = y_p1.reshape(kernel_input_shape)
 
         # apply kernel for all pairs (j, j')
-        kwargs = self.kernel_kwargs["interaction_term"] if "interaction_term" in self.kernel_kwargs else self.kernel_kwargs
+        kwargs = deepcopy(self.interaction_kwargs)
+        local_t = repeat(t, "b -> (b k)", k=const_num_pairs)
+        kwargs["beta"] = kwargs.get("beta_start", kwargs["beta"]) * self.beta_schedule(local_t) + kwargs["beta"] * (1 - self.beta_schedule(local_t))
         rho_values_all_filtered = self.kernel_function(x_for_kernel, y_for_kernel, **kwargs)
         reduce_input_shape: Tuple = (n, const_num_pairs) + x.shape[3:]
         rho_values_per_sample_pairs = rho_values_all_filtered.reshape(reduce_input_shape)
@@ -228,7 +239,7 @@ class GeneralizedKernelScore(nn.Module):
         mean_rho_for_each_sample = reduce(rho_values_per_sample_pairs, "b k ... -> b", "mean")
         return mean_rho_for_each_sample
 
-    def compute_rho_diagonal(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def compute_rho_diagonal(self, x: torch.Tensor, y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         m: int = self.population_size  # Python constant
         n: int = x.shape[0]  # Batch size, can be symbolic
 
@@ -243,7 +254,9 @@ class GeneralizedKernelScore(nn.Module):
         y_reshaped = y.reshape(kernel_input_shape)
 
         # apply kernel
-        kwargs = self.kernel_kwargs["confinement_term"] if "confinement_term" in self.kernel_kwargs else self.kernel_kwargs
+        kwargs = deepcopy(self.confinement_kwargs)
+        local_t = repeat(t, "b -> (b k)", k=m)
+        kwargs["beta"] = kwargs.get("beta_start", kwargs["beta"]) * self.beta_schedule(local_t) + kwargs["beta"] * (1 - self.beta_schedule(local_t))
         rho_values = self.kernel_function(x_reshaped, y_reshaped, **kwargs)
 
         # reshape to match the expected output shape
@@ -258,7 +271,7 @@ class GeneralizedKernelScore(nn.Module):
         self, x: torch.Tensor, y: torch.Tensor, t: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         # e_rho_xp_y is the confinement term
-        confinement_term = self.compute_rho_diagonal(x, y)
+        confinement_term = self.compute_rho_diagonal(x, y, t)
         score = -confinement_term
         
         
@@ -266,7 +279,7 @@ class GeneralizedKernelScore(nn.Module):
         interaction_term_mult_by_lambda = None
         if self.lambda_val > 0 or self.track_terms_regardless_of_lambda:
             # we track all the values regardless of lambda if the flag is active
-            interaction_term = self.compute_rho(x, x)
+            interaction_term = self.compute_rho(x, x, t)
             weighted_lambda = self.lambda_val * self.lambda_weighting(t)
             interaction_term_mult_by_lambda = (weighted_lambda / 2.0) * interaction_term
 
@@ -370,6 +383,7 @@ def create_generalized_kernel_score(
     kernel_function: str,
     lambda_val: float,
     lambda_weighting_function: str,
+    beta_schedule: str,
     population_size: int,
     kernel_kwargs: dict,
     track_terms_regardless_of_lambda: bool,
@@ -414,14 +428,20 @@ def create_generalized_kernel_score(
         raise ValueError(
             f"Unknown lambda weighting function: {lambda_weighting_function}. Available options: {list(lambda_weighting_map.keys())}"
         )
+    if beta_schedule not in lambda_weighting_map:
+        raise ValueError(
+            f"Unknown beta schedule: {beta_schedule}. Available options: {list(lambda_weighting_map.keys())}"
+        )
 
     kernel_fn = kernel_function_map[kernel_function]
     lambda_weighting_fn = lambda_weighting_map[lambda_weighting_function]
+    beta_schedule_fn = lambda_weighting_map[beta_schedule]
 
     return GeneralizedKernelScore(
         kernel_function=kernel_fn,
         lambda_val=lambda_val,
         lambda_weighting_function=lambda_weighting_fn,
+        beta_schedule=beta_schedule_fn,
         population_size=population_size,
         kernel_kwargs=kernel_kwargs,
         track_terms_regardless_of_lambda=track_terms_regardless_of_lambda,

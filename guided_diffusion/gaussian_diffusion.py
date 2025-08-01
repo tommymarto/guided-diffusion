@@ -115,8 +115,9 @@ class LossWeightingType(enum.Enum):
     """
 
     NO_WEIGHTING = enum.auto()  # no weighting
-    KINGMA_SNR = enum.auto()  # weight by log SNR       
- 
+    KINGMA_SNR = enum.auto()  # weight by log SNR
+    KINGMA_SNR_INVERTED = enum.auto()  # weight by inverted log SNR
+
 class LossWeighting:
     """
     This only applies to the distributional loss.
@@ -124,7 +125,16 @@ class LossWeighting:
     
     def __init__(self, weighting_type):
         weighting_type = weighting_type.upper()
-        if weighting_type.startswith("KINGMA_SNR"):
+        if weighting_type.startswith("KINGMA_SNR_INVERTED"):
+            self.type = LossWeightingType.KINGMA_SNR_INVERTED
+            # Extract parameter if present
+            if len(weighting_type.split("_")) == 4:
+                self.b = float(weighting_type.split("_")[3])
+            elif len(weighting_type.split("_")) == 3:
+                self.b = 0  # default value
+            else:
+                raise ValueError(f"Invalid weighting type format: {weighting_type}")
+        elif weighting_type.startswith("KINGMA_SNR"):
             self.type = LossWeightingType.KINGMA_SNR
             # Extract parameter if present
             if len(weighting_type.split("_")) == 3:
@@ -190,6 +200,7 @@ class GaussianDiffusion:
         self.distributional_kernel = distributional_kernel
         self.distributional_lambda = distributional_lambda
         self.distributional_lambda_weighting = distributional_lambda_weighting
+        self.distributional_beta_schedule = distributional_beta_schedule
         self.distributional_population_size = distributional_population_size
         self.distributional_kernel_kwargs = distributional_kernel_kwargs
         self.distributional_loss_weighting = distributional_loss_weighting
@@ -241,6 +252,7 @@ class GaussianDiffusion:
             kernel_function=distributional_kernel,
             lambda_val=distributional_lambda,
             lambda_weighting_function=distributional_lambda_weighting,
+            beta_schedule=distributional_beta_schedule,
             population_size=distributional_population_size,
             kernel_kwargs=distributional_kernel_kwargs,
             track_terms_regardless_of_lambda=distributional_track_terms_regardless_of_lambda,
@@ -980,8 +992,10 @@ class GaussianDiffusion:
             
             if self.distributional_loss_weighting == LossWeightingType.KINGMA_SNR:
                 logsnr = self._calculate_logsnr(t, terms["score"])
-                if self.model_mean_type == ModelMeanType.EPSILON and not self.inverted_snr:
-                    logsnr = -logsnr  # flip the sign for epsilon prediction
+                weight = (1 + (self.distributional_loss_weighting.b - logsnr).exp()) ** -1
+                terms["loss"] = -(terms["score"] * weight)
+            elif self.distributional_loss_weighting == LossWeightingType.KINGMA_SNR_INVERTED:
+                logsnr = -self._calculate_logsnr(t, terms["score"])
                 weight = (1 + (self.distributional_loss_weighting.b - logsnr).exp()) ** -1
                 terms["loss"] = -(terms["score"] * weight)
             else:
