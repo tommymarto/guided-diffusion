@@ -60,8 +60,8 @@ def main():
     sample_stats, sample_stats_spatial = evaluator.read_statistics(args.sample_batch, sample_acts)
 
     print("Computing evaluations...")
-    # prec, recall = evaluator.compute_prec_recall(ref_acts[0], sample_acts[0])
-    prec, recall = 0, 0
+    prec, recall = evaluator.compute_prec_recall(ref_acts[0], sample_acts[0])
+    # prec, recall = 0, 0
     print("Precision/Recall done")
     inception_score = evaluator.compute_inception_score(sample_acts[0])
     print("Inception Score done")
