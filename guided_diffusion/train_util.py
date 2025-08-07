@@ -376,7 +376,7 @@ def find_resume_checkpoint():
         return None
     checkpoints = [
         f for f in os.listdir(checkpoints_dir) if
-        f.startswith("model") and f.endswith(".pt") and (parse_resume_step_from_filename(f) > 0)
+        f.startswith("model") and f.endswith(".pt") and (parse_resume_step_from_filename(f) > 0 and parse_resume_step_from_filename(f) % 100 == 0)
     ]
     if len(checkpoints) == 0:
         return None

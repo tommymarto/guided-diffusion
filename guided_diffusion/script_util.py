@@ -46,7 +46,9 @@ def diffusion_defaults():
         distributional_kernel_kwargs={"beta": 1.0},
         distributional_loss_weighting="no_weighting",  # can be "no_weighting" or "kingma_snr"
         distributional_num_eps_channels=1,
-        dispersion_loss_type="none"
+        dispersion_loss_type="none",
+        dispersion_loss_weight=0.5,
+        dispersion_loss_last_act_only=False
     )
 
 
@@ -112,7 +114,9 @@ def create_model_and_diffusion(
     distributional_kernel_kwargs,
     distributional_loss_weighting,
     distributional_num_eps_channels,
-    dispersion_loss_type
+    dispersion_loss_type,
+    dispersion_loss_weight,
+    dispersion_loss_last_act_only
 ):
     model = create_model(
         image_size,
@@ -155,6 +159,8 @@ def create_model_and_diffusion(
         distributional_loss_weighting=distributional_loss_weighting,
         distributional_num_eps_channels=distributional_num_eps_channels,
         dispersion_loss_type=dispersion_loss_type,
+        dispersion_loss_weight=dispersion_loss_weight,
+        dispersion_loss_last_act_only=dispersion_loss_last_act_only
     )
     return model, diffusion
 
@@ -245,6 +251,8 @@ def create_gaussian_diffusion(
     distributional_loss_weighting="no_weighting",
     distributional_num_eps_channels=1,
     dispersion_loss_type="none",
+    dispersion_loss_weight=0.5,
+    dispersion_loss_last_act_only=False
 ):
     betas = gd.get_named_beta_schedule(noise_schedule, steps)
     if use_kl:
@@ -283,7 +291,9 @@ def create_gaussian_diffusion(
         distributional_kernel_kwargs=distributional_kernel_kwargs,
         distributional_loss_weighting=gd.LossWeighting(distributional_loss_weighting.upper()),
         distributional_num_eps_channels=distributional_num_eps_channels,
-        dispersion_loss_type=gd.DispersionLossType[dispersion_loss_type.upper()]
+        dispersion_loss_type=gd.DispersionLossType[dispersion_loss_type.upper()],
+        dispersion_loss_weight=dispersion_loss_weight,
+        dispersion_loss_last_act_only=dispersion_loss_last_act_only
     )
 
 

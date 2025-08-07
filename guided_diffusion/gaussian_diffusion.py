@@ -104,7 +104,6 @@ class LossType(enum.Enum):
 class DispersionLossType(enum.Enum):
     NONE = enum.auto()  # no dispersion loss
     INTERACTION = enum.auto()  # interaction-based dispersion loss
-    INFONCE_L2 = enum.auto()  # L2 dispersion loss
 
     def __str__(self):
         return self.name.replace("_", " ").title()
@@ -188,6 +187,8 @@ class GaussianDiffusion:
         distributional_kernel_kwargs={"beta": 1.0},
         distributional_loss_weighting=LossWeighting("NO_WEIGHTING"),
         dispersion_loss_type=DispersionLossType.NONE,
+        dispersion_loss_weight=0.5,
+        dispersion_loss_last_act_only=False,
         distributional_num_eps_channels=1,
     ):
         self.model_mean_type = model_mean_type
@@ -206,8 +207,9 @@ class GaussianDiffusion:
         self.distributional_loss_weighting = distributional_loss_weighting
         self.distributional_num_eps_channels = distributional_num_eps_channels
         
-        self.inverted_snr = False
         self.dispersion_loss_type = dispersion_loss_type
+        self.dispersion_loss_weight = dispersion_loss_weight
+        self.dispersion_loss_last_act_only = dispersion_loss_last_act_only
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -926,27 +928,23 @@ class GaussianDiffusion:
             else:
                 y_population = None
 
-            model_output, acts = model(x_t_population, self._scale_timesteps(t_population), y=y_population, eps=eps_population, return_acts=True)
+            model_output, acts_population = model(x_t_population, self._scale_timesteps(t_population), y=y_population, eps=eps_population, return_acts=True)
 
             if self.dispersion_loss_type is not DispersionLossType.NONE:
                 # Calculate the dispersion term.
                 if self.dispersion_loss_type == DispersionLossType.INTERACTION:
-                    raise NotImplementedError("Interaction-based dispersion loss is not implemented.")
-                elif self.dispersion_loss_type == DispersionLossType.INFONCE_L2:
-                    def disp_loss(z): # Dispersive Loss implementation (InfoNCE-L2 variant)
-                        z = z.reshape((z.shape[0],-1)) # flatten
-                        diff = th.nn.functional.pdist(z).pow(2)/z.shape[1] # pairwise distance
-                        diff = th.concat((diff, diff, th.zeros(z.shape[0]).cuda()))  # match JAX implementation of full BxB matrix
-                        return th.log(th.exp(-diff).mean()) # calculate loss
-                        
-                    terms["dispersion"] = disp_loss(acts)
-                        
-                    
-                elif self.dispersion_loss_type == DispersionLossType.MIN:
-                    dispersion = acts.min(dim=0).values
-                else:
-                    raise NotImplementedError(self.dispersion_loss_type)
-                terms["dispersion"] = dispersion
+                    # first let's normalize the acts
+                    acts_population = [a / th.norm(a, dim=1, keepdim=True) for a in acts_population]
+                    acts = [rearrange(acts_population[i], "(n m) ... -> n m ...", m=m) for i in range(len(acts_population))]
+                    acts_interaction = [self.generalized_kernel_score.compute_rho(
+                        a, a, self._scale_timesteps(t)
+                    ) for a in acts]
+                    if self.dispersion_loss_last_act_only:
+                        acts_interaction = acts_interaction[-1]
+                    else:
+                        acts_interaction = th.stack(acts_interaction, dim=0)
+                        acts_interaction = th.mean(acts_interaction, dim=0)
+                    terms["dispersion"] = -(self.dispersion_loss_weight * acts_interaction)
 
             if self.model_var_type in [
                 ModelVarType.LEARNED,
