@@ -292,6 +292,8 @@ def calculate_collapse_time_torch(data: torch.Tensor, t_range: np.ndarray, n_pri
 
 # Your provided CosineSchedule class
 # I've modified it slightly to accept numpy arrays for plotting
+from guided_diffusion.script_util import create_gaussian_diffusion
+import torch
 class CosineSchedule:
 	def __init__(self):
 		self.diffusion = create_gaussian_diffusion(
@@ -907,7 +909,21 @@ with open(f"../outputs/collapse_results_{dataset_name}.pkl", "wb") as f:
 # %%
 import pickle
 # load from pickle file
+dataset_name = "cifar10"
 with open(f"../outputs/collapse_results_{dataset_name}.pkl", "rb") as f:
 	results = pickle.load(f)
 
+# %%
+import numpy as np
+results
+# %%
+all_f_values = np.array([result[3] for result in results])
+all_t_C = np.array([result[0] for result in results])
+all_t_S = np.array([result[1] for result in results])
+all_t_S_one_channel = np.array([result[2] for result in results])
+n_samples_total = [x[4] for x in results]
+
+schedule = CosineSchedule()
+# %%
+convert_biroli_to_custom_cosine(all_t_C.mean(), schedule), convert_biroli_to_custom_cosine(all_t_S.mean(), schedule), convert_biroli_to_custom_cosine(all_t_S_one_channel.mean(), schedule)
 # %%

@@ -45,7 +45,7 @@ def energy_kernel(x: torch.Tensor, x_prime: torch.Tensor, beta: float, norm_dim:
     stable_base = squared_norm + eps
     
     if isinstance(exponent, torch.Tensor):
-        exponent = right_pad_dims_to(exponent, stable_base)
+        exponent = right_pad_dims_to(stable_base, exponent)
     
     return torch.pow(stable_base, exponent)
 
@@ -210,6 +210,12 @@ class GeneralizedKernelScore(nn.Module):
         self.register_buffer("selected_j", selected_j_tensor)
         self.register_buffer("selected_j_prime", selected_j_prime_tensor)
 
+    def get_scheduled_beta(self, t, kwargs, m):
+        local_t = repeat(t, "b -> (b k)", k=m)
+        beta_start = kwargs.get("beta_start", kwargs["beta"])
+        beta = kwargs["beta"]
+        return beta_start * self.beta_schedule(local_t) + beta * (1 - self.beta_schedule(local_t))
+
     def compute_rho(self, x: torch.Tensor, y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         m: int = self.population_size  # Python constant
         n: int = x.shape[0]  # Batch size, can be symbolic
@@ -229,8 +235,7 @@ class GeneralizedKernelScore(nn.Module):
 
         # apply kernel for all pairs (j, j')
         kwargs = deepcopy(self.interaction_kwargs)
-        local_t = repeat(t, "b -> (b k)", k=const_num_pairs)
-        kwargs["beta"] = kwargs.get("beta_start", kwargs["beta"]) * self.beta_schedule(local_t) + kwargs["beta"] * (1 - self.beta_schedule(local_t))
+        kwargs["beta"] = self.get_scheduled_beta(t, kwargs, const_num_pairs)
         rho_values_all_filtered = self.kernel_function(x_for_kernel, y_for_kernel, **kwargs)
         reduce_input_shape: Tuple = (n, const_num_pairs) + x.shape[3:]
         rho_values_per_sample_pairs = rho_values_all_filtered.reshape(reduce_input_shape)
@@ -253,10 +258,9 @@ class GeneralizedKernelScore(nn.Module):
         x_reshaped = x.reshape(kernel_input_shape)
         y_reshaped = y.reshape(kernel_input_shape)
 
-        # apply kernel
+        # apply kernel            
         kwargs = deepcopy(self.confinement_kwargs)
-        local_t = repeat(t, "b -> (b k)", k=m)
-        kwargs["beta"] = kwargs.get("beta_start", kwargs["beta"]) * self.beta_schedule(local_t) + kwargs["beta"] * (1 - self.beta_schedule(local_t))
+        kwargs["beta"] = self.get_scheduled_beta(t, kwargs, m)
         rho_values = self.kernel_function(x_reshaped, y_reshaped, **kwargs)
 
         # reshape to match the expected output shape
@@ -340,8 +344,8 @@ class CosineScheduleNormalized(LambdaSchedule):
 
     def __call__(self, t):
         t = self.normalized_t(t)
-        return (
-            -2 * log(torch.tan(self.t_min + t * (self.t_max - self.t_min))) / (self.logsnr_max - self.logsnr_min) + 0.5
+        return -(
+            -2 * log(torch.tan(self.t_min + t * (self.t_max - self.t_min))) / (self.logsnr_max - self.logsnr_min) - 0.5
         )
 
 
@@ -357,7 +361,7 @@ class SigmoidScheduleNormalized(LambdaSchedule):
         logsnr = logsnr_schedule_cosine(t)
         weight = (1 + (self.b - logsnr).exp()) ** -1
 
-        return weight
+        return 1 - weight
 
 
 def SigmoidScheduleShiftedNormalized(num_timesteps: int, b=-1):
@@ -375,7 +379,140 @@ class ConstantScheduleNormalized(LambdaSchedule):
     """Constant schedule normalized to [0, 1]."""
 
     def __call__(self, t):
-        return 1.0
+        return torch.ones_like(t)
+        
+class StepScheduleNormalized(LambdaSchedule):
+    """Step schedule normalized to [0, 1]."""
+    
+    def __init__(self, num_timesteps: int, step=0.7):
+        super().__init__(num_timesteps)
+        self.step = step
+
+    def __call__(self, t):
+        t = self.normalized_t(t)
+        return (t >= self.step).to(t.dtype)  # Convert boolean to float (0.0 or 1.0)
+        
+class DynamicalRegimesScheduleNormalized(LambdaSchedule):
+    """Dynamical regimes schedule normalized to [0, 1]."""
+
+    def __init__(self, num_timesteps: int, interpolation: LambdaSchedule, regimes=(0.6420, 0.9115)):
+        super().__init__(num_timesteps)
+        self.regimes = regimes
+        self.interpolation = interpolation
+
+    def __call__(self, t):
+        t = self.normalized_t(t)
+        # 1. Define the boolean masks for each of the three regimes.
+        # These masks will have the same shape as `t`.
+        is_before_regime = t < self.regimes[0]
+        is_after_regime = t > self.regimes[1]
+        
+        # 2. Calculate the value for the interpolation regime.
+        # This calculation is performed on all elements, but we will use `torch.where`
+        # to select only the ones that fall within the interpolation regime.
+        t_local = (t - self.regimes[0]) / (self.regimes[1] - self.regimes[0])
+        interpolation_result = self.interpolation(t_local * (self.num_timesteps - 1))
+
+        # 3. Use nested `torch.where` to apply the conditions element-wise.
+        # This is the tensor-based equivalent of the original `if/elif/else` block.
+        
+        # First, handle the 'elif/else' logic:
+        # If an element is in the "after" regime, use 1.0; otherwise, use its interpolation result.
+        after_or_interp_result = torch.where(
+            is_after_regime, 
+            torch.ones_like(t), # Value if True
+            interpolation_result           # Value if False
+        )
+
+        # Now, handle the 'if' logic:
+        # If an element is in the "before" regime, use 0.0; otherwise, use the result from the step above.
+        final_result = torch.where(
+            is_before_regime,
+            torch.zeros_like(t), # Value if True
+            after_or_interp_result          # Value if False
+        )
+
+        return final_result
+
+def DynamicalRegimesScheduleNormalizedWithLinearInterpolation(num_timesteps: int):
+    """
+    Factory function to create a DynamicalRegimesScheduleNormalized with linear interpolation.
+    
+    Args:
+        num_timesteps (int): Number of timesteps for the schedule.
+        
+    Returns:
+        DynamicalRegimesScheduleNormalized: An instance of DynamicalRegimesScheduleNormalized with linear interpolation.
+    """
+    return DynamicalRegimesScheduleNormalized(
+        num_timesteps=num_timesteps,
+        interpolation=LinearScheduleNormalized(num_timesteps=num_timesteps),
+        regimes=(0.6420, 0.9115)
+    )
+    
+def DynamicalRegimesScheduleNormalizedWithCosineInterpolation(num_timesteps: int):
+    """
+    Factory function to create a DynamicalRegimesScheduleNormalized with cosine interpolation.
+    
+    Args:
+        num_timesteps (int): Number of timesteps for the schedule.
+        
+    Returns:
+        DynamicalRegimesScheduleNormalized: An instance of DynamicalRegimesScheduleNormalized with cosine interpolation.
+    """
+    return DynamicalRegimesScheduleNormalized(
+        num_timesteps=num_timesteps,
+        interpolation=CosineScheduleNormalized(num_timesteps=num_timesteps),
+        regimes=(0.6420, 0.9115)
+    )
+    
+def DynamicalRegimesScheduleNormalizedWithSigmoidInterpolation(num_timesteps: int):
+    """
+    Factory function to create a DynamicalRegimesScheduleNormalized with sigmoid interpolation.
+    
+    Args:
+        num_timesteps (int): Number of timesteps for the schedule.
+        
+    Returns:
+        DynamicalRegimesScheduleNormalized: An instance of DynamicalRegimesScheduleNormalized with sigmoid interpolation.
+    """
+    return DynamicalRegimesScheduleNormalized(
+        num_timesteps=num_timesteps,
+        interpolation=SigmoidScheduleNormalized(num_timesteps=num_timesteps),
+        regimes=(0.6420, 0.9115)
+    )
+    
+def DynamicalRegimesScheduleNormalizedWithSigmoidShiftedInterpolation(num_timesteps: int):
+    """
+    Factory function to create a DynamicalRegimesScheduleNormalized with shifted sigmoid interpolation.
+    
+    Args:
+        num_timesteps (int): Number of timesteps for the schedule.
+        
+    Returns:
+        DynamicalRegimesScheduleNormalized: An instance of DynamicalRegimesScheduleNormalized with shifted sigmoid interpolation.
+    """
+    return DynamicalRegimesScheduleNormalized(
+        num_timesteps=num_timesteps,
+        interpolation=SigmoidScheduleShiftedNormalized(num_timesteps=num_timesteps),
+        regimes=(0.6420, 0.9115)
+    )
+    
+def DynamicalRegimesScheduleNormalizedWithStepInterpolation(num_timesteps: int):
+    """
+    Factory function to create a DynamicalRegimesScheduleNormalized with step interpolation.
+    
+    Args:
+        num_timesteps (int): Number of timesteps for the schedule.
+        
+    Returns:
+        DynamicalRegimesScheduleNormalized: An instance of DynamicalRegimesScheduleNormalized with step interpolation.
+    """
+    return DynamicalRegimesScheduleNormalized(
+        num_timesteps=num_timesteps,
+        interpolation=StepScheduleNormalized(num_timesteps=num_timesteps),
+        regimes=(0.6420, 0.9115)
+    )
 
 
 def create_generalized_kernel_score(
@@ -418,6 +555,12 @@ def create_generalized_kernel_score(
         "cosine": CosineScheduleNormalized(num_timesteps=num_timesteps),
         "sigmoid": SigmoidScheduleNormalized(num_timesteps=num_timesteps),
         "sigmoid_shifted": SigmoidScheduleShiftedNormalized(num_timesteps=num_timesteps),
+        "step": StepScheduleNormalized(num_timesteps=num_timesteps),
+        "dynamical_linear": DynamicalRegimesScheduleNormalizedWithLinearInterpolation(num_timesteps=num_timesteps),
+        "dynamical_cosine": DynamicalRegimesScheduleNormalizedWithCosineInterpolation(num_timesteps=num_timesteps),
+        "dynamical_sigmoid": DynamicalRegimesScheduleNormalizedWithSigmoidInterpolation(num_timesteps=num_timesteps),
+        "dynamical_sigmoid_shifted": DynamicalRegimesScheduleNormalizedWithSigmoidShiftedInterpolation(num_timesteps=num_timesteps),
+        "dynamical_step": DynamicalRegimesScheduleNormalizedWithStepInterpolation(num_timesteps=num_timesteps),
     }
 
     if kernel_function not in kernel_function_map:
