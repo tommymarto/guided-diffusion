@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=fid-evaluation
-#SBATCH --partition=gpu  # Specify the partition name
+#SBATCH --partition=gpu_lowp  # Specify the partition name
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4         # Adjust based on your needs
-#SBATCH --gres=gpu:a4500:1               # Number of GPUs per node
+#SBATCH --gres=gpu:h100:1               # Number of GPUs per node
 #SBATCH --mem=48G                  # Adjust based on your needs
 #SBATCH --time=24:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
@@ -27,7 +27,7 @@ source $VENV_PATH/bin/activate
 # Exit on errors
 set -o errexit
 
-EXPERIMENT_NAME="cifar10_cond_distributional_noweighting_without_sigma_full_batch_better_channels"
+EXPERIMENT_NAME="1214601_cifar10_cond_distributional_noweighting_without_sigma_better_channels_lambda_linear_beta_linear"
 CHECKPOINT_STEP="300000"
 
 echo "Checkpoint: $EXPERIMENT_NAME"
@@ -71,6 +71,11 @@ do
                 --diffusion_steps 4000 \
                 --noise_schedule cosine \
                 --use_distributional True \
+                --distributional_loss_weighting NO_WEIGHTING \
+                --distributional_population_size 4 \
+                --distributional_lambda_weighting linear \
+                --distributional_beta_schedule linear \
+                --distributional_kernel_kwargs '{"beta": 2.0, "beta_start": 0.1}' \
                 --distributional_num_eps_channels 1 \
                 --num_head_channels 64 \
                 --use_fp16 True \

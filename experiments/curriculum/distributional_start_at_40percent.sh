@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=b_______
+#SBATCH --job-name=curr_40p
 #SBATCH --partition=gpu_lowp  # Specify the partition name
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
-#SBATCH --cpus-per-task=8         # Adjust based on your needs
-#SBATCH --gres=gpu:l40s:2               # Number of GPUs per node
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=6         # Adjust based on your needs
+#SBATCH --gres=gpu:h100:1               # Number of GPUs per node
 #SBATCH --mem=48G                  # Adjust based on your needs
 #SBATCH --time=48:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
@@ -46,16 +46,24 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="cifar10_cond_baseline"
+export EXPERIMENT_NAME="curriculum_start_at_40percent"
 
-export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/logs_$EXPERIMENT_NAME"
-export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/blobs_$EXPERIMENT_NAME"
+export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/curriculum/logs_$EXPERIMENT_NAME"
+export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/curriculum/blobs_$EXPERIMENT_NAME"
+
+START_ITER=120000
+
+mkdir -p $OPENAI_BLOBDIR
+BASELINE_DIR="/ceph/scratch/martorellat/guided_diffusion/curriculum/blobs_FINAL_curriculum_baseline"
+cp $BASELINE_DIR/model$START_ITER.pt $OPENAI_BLOBDIR
+cp $BASELINE_DIR/ema_0.9999_$START_ITER.pt $OPENAI_BLOBDIR
+cp $BASELINE_DIR/opt$START_ITER.pt $OPENAI_BLOBDIR
 
 # --- Training ---
 # See the README for more options: https://github.com/willisma/SiT#training-sit [1]
 
 DATA_PATH="/nfs/ghome/live/martorellat/data/cifar_train" # Specify the path to your ImageNet training data
-
+POPULATION_SIZE=4
 
 # Set number of processes per node based on local mode
 if [ "$LOCAL_MODE" = true ]; then
@@ -64,36 +72,43 @@ if [ "$LOCAL_MODE" = true ]; then
         --data_dir $DATA_PATH \
         --image_size 32 \
         --num_classes 10 \
-        --num_channels 128 \
+        --num_channels 192 \
         --num_res_blocks 3 \
         --class_cond True \
         --learn_sigma True \
-        --lr 1e-4 \
+        --lr 5e-5 \
         --batch_size 128 \
         --dropout 0.3 \
         --diffusion_steps 4000 \
         --noise_schedule cosine \
-        --num_head_channels 64 \
+        --use_distributional True \
+        --distributional_loss_weighting NO_WEIGHTING \
+        --distributional_population_size $POPULATION_SIZE \
+        --distributional_num_eps_channels 1 \
+        --num_head_channels 32 \
         --use_fp16 True
 
 else
     echo "Running in SLURM mode with $SLURM_GPUS_ON_NODE GPUs"
     mpiexec -n $SLURM_GPUS_ON_NODE -x LD_LIBRARY_PATH -x CUDA_HOME \
-        --mca pml ob1 --mca btl ^openib \
         uv run ./scripts/image_train.py \
             --data_dir $DATA_PATH \
             --image_size 32 \
             --num_classes 10 \
-            --num_channels 128 \
+            --num_channels 192 \
             --num_res_blocks 3 \
             --class_cond True \
             --learn_sigma True \
-            --lr 1e-4 \
+            --lr 5e-5 \
             --batch_size $((128 / $SLURM_GPUS_ON_NODE)) \
             --dropout 0.3 \
             --diffusion_steps 4000 \
             --noise_schedule cosine \
-            --num_head_channels 64 \
+            --use_distributional True \
+            --distributional_loss_weighting NO_WEIGHTING \
+            --distributional_population_size $POPULATION_SIZE \
+            --distributional_num_eps_channels 1 \
+            --num_head_channels 32 \
             --use_fp16 True
 
 fi

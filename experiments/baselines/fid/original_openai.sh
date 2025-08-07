@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=fid-evaluation
-#SBATCH --partition=gpu  # Specify the partition name
+#SBATCH --partition=gpu_lowp  # Specify the partition name
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4         # Adjust based on your needs
-#SBATCH --gres=gpu:a4500:1               # Number of GPUs per node
+#SBATCH --gres=gpu:h100:1               # Number of GPUs per node
 #SBATCH --mem=48G                  # Adjust based on your needs
 #SBATCH --time=24:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
@@ -14,20 +14,21 @@ module purge
 module load cuda/12.4
 
 VENV_PATH=$(pwd)/.venv
-INNER_VENV_PATH=$(pwd)/evaluations/.venv
 
 VENV_CUDNN_INCLUDE_PATH="$VENV_PATH/lib/python3.10/site-packages/nvidia/cudnn/include"
 export CPLUS_INCLUDE_PATH="$VENV_CUDNN_INCLUDE_PATH${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}"
 
 VENV_CUDNN_LIB_PATH="$VENV_PATH/lib/python3.10/site-packages/nvidia/cudnn/lib"
 PYTORCH_LIB_PATH="$VENV_PATH/lib/python3.10/site-packages/torch/lib"
+export LD_LIBRARY_PATH=$PYTORCH_LIB_PATH:$VENV_CUDNN_LIB_PATH:$LD_LIBRARY_PATH
+export CUDA_HOME="/ceph/apps/ubuntu-24/packages/cuda/12.4.0_550.54.14"
 
 source $VENV_PATH/bin/activate
 
 # Exit on errors
 set -o errexit
 
-EXPERIMENT_NAME="cifar10_cond_distributional_noweighting_without_sigma_full_batch_better_channels"
+EXPERIMENT_NAME="unconditional_openai"
 CHECKPOINT_STEP="300000"
 
 echo "Checkpoint: $EXPERIMENT_NAME"
@@ -54,42 +55,33 @@ do
             USE_DDIM="True"
             N_STEPS_FORMATTED="ddim$N_STEPS"
         fi
-        (
-            export LD_LIBRARY_PATH=$PYTORCH_LIB_PATH:$VENV_CUDNN_LIB_PATH:$LD_LIBRARY_PATH
-            export CUDA_HOME="/ceph/apps/ubuntu-24/packages/cuda/12.4.0_550.54.14"
-            
-            python \
-                scripts/image_sample.py \
-                --data_dir "/nfs/ghome/live/martorellat/data/cifar_train" \
-                --model_path "/ceph/scratch/martorellat/guided_diffusion/blobs_$EXPERIMENT_NAME/ema_0.9999_$CHECKPOINT_STEP.pt" \
-                --image_size 32 \
-                --num_classes 10 \
-                --num_channels 192 \
-                --num_res_blocks 3 \
-                --class_cond True \
-                --batch_size 1024 \
-                --diffusion_steps 4000 \
-                --noise_schedule cosine \
-                --use_distributional True \
-                --distributional_num_eps_channels 1 \
-                --num_head_channels 64 \
-                --use_fp16 True \
-                --use_ddim $USE_DDIM \
-                --timestep_respacing $N_STEPS_FORMATTED \
-                --num_samples $NUM_FID_SAMPLES \
-                --exp_name $EXPERIMENT_NAME
-        )
+        python \
+            scripts/image_sample.py \
+            --data_dir "/nfs/ghome/live/martorellat/data/cifar_train" \
+            --model_path "/ceph/scratch/martorellat/guided_diffusion/blobs_$EXPERIMENT_NAME/ema_0.9999_$CHECKPOINT_STEP.pt" \
+            --image_size 32 \
+            --num_classes 10 \
+            --num_channels 128 \
+            --num_res_blocks 3 \
+            --learn_sigma True \
+            --batch_size 1024 \
+            --diffusion_steps 4000 \
+            --noise_schedule cosine \
+            --num_head_channels 64 \
+            --use_fp16 True \
+            --use_ddim $USE_DDIM \
+            --timestep_respacing $N_STEPS_FORMATTED \
+            --num_samples $NUM_FID_SAMPLES \
+            --exp_name $EXPERIMENT_NAME
 
         # Important to cd because we have another venv inside evaulations
         # and uv picks it automatically if we are in the right folder
         cd evaluations
-        source $INNER_VENV_PATH/bin/activate
-        python \
+        uv run python \
             evaluator.py \
             /nfs/ghome/live/martorellat/data/images_train.npz \
             /ceph/scratch/martorellat/guided_diffusion/samples_$EXPERIMENT_NAME/$SAMPLING_MODE-steps-$N_STEPS/samples_${NUM_FID_SAMPLES}x32x32x3.npz
         cd ..
-        source $VENV_PATH/bin/activate
         
 
     done

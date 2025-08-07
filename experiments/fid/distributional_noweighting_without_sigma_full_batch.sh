@@ -28,12 +28,12 @@ source $VENV_PATH/bin/activate
 set -o errexit
 
 EXPERIMENT_NAME="cifar10_cond_distributional_noweighting_without_sigma_full_batch"
-CHECKPOINT_STEP="300000"
+CHECKPOINT_STEP="660001"
 
 echo "Checkpoint: $EXPERIMENT_NAME"
 echo "Checkpoint step: $CHECKPOINT_STEP"
 
-SAMPLING_STEPS=(2 3 4 5 10 30 50 100)
+SAMPLING_STEPS=(5 10 20 30 50)
 CFG_SCALES=(0.0)
 SAMPLING_MODE="DDIM"
 NUM_FID_SAMPLES=50000
