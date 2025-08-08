@@ -90,9 +90,11 @@ def timestamp_sample(
     Returns a generator over dicts, where each dict is the return value of
     p_sample().
     """
+    imgs = imgs.to(th.float16)
     t = th.linspace(
         diffusion.num_timesteps - 1, 0, num_timesteps, device=device
     ).long()
+    t = (th.tensor([0.99, 0.9115, 0.6820, 0], device=device) * diffusion.num_timesteps).long()
     noise = th.randn_like(imgs)
 
     t_forward = repeat(t, 't -> b t', b=imgs.shape[0])
@@ -103,6 +105,7 @@ def timestamp_sample(
         model_kwargs["y"] = repeat(model_kwargs["y"], 'b -> (b t)', t=t_forward.shape[1]).to(device)
     if diffusion.use_distributional:
         eps = th.randn_like(imgs)
+        eps = eps[:, :diffusion.distributional_num_eps_channels, ...]
         model_kwargs["eps"] = repeat(eps, 'b ... -> (b t) ...', t=t_forward.shape[1]).to(device)
 
     x_t_forward = diffusion.q_sample(imgs_forward, t_forward, noise=noise_forward)
@@ -175,6 +178,7 @@ def main(args):
         th.load(args.model_path, map_location="cpu") if args.model_path else {}
     )
     model.to(device)
+    model.convert_to_fp16()
     model.eval()
 
     logger.log("sampling...")
@@ -247,7 +251,7 @@ def main(args):
         batch,
         model_kwargs=cond,
         use_ddim=args.use_ddim,
-        num_timesteps=20,
+        num_timesteps=4,
         device=device,
         factor=args.factor,
         exp_name=args.exp_name,
@@ -262,7 +266,7 @@ def main(args):
 #%%
 
 # exp_name = "cifar10_uncond_openai"
-exp_name = "cifar10_cond_openai"
+# exp_name = "cifar10_cond_openai"
 # exp_name = "cifar10_cond_baseline"
 # exp_name = "cifar10_cond_distributional_implementation_check"
 # exp_name = "cifar10_cond_distributional_logsnr"
@@ -270,6 +274,7 @@ exp_name = "cifar10_cond_openai"
 # exp_name = "cifar10_cond_distributional_noweighting_lambda_linear"
 # exp_name = "cifar10_cond_distributional_noweighting_eps_pred"
 # exp_name = "cifar10_cond_distributional_noweighting_eps_pred"
+exp_name = "curriculum_start_at_20percent"
 checkpoint_iter = 300_000
 ema = True
 model = f"ema_0.9999_{checkpoint_iter}" if ema else f"model{checkpoint_iter}" 
@@ -279,7 +284,7 @@ defaults = dict(
     num_classes=10,
     batch_size=10 * 4,
     image_size=32,
-    num_channels=128,
+    num_channels=192,
     num_res_blocks=3,
     learn_sigma=True,
     diffusion_steps=4000,
@@ -288,11 +293,14 @@ defaults = dict(
     class_cond="uncond" not in exp_name,
     predict_xstart=False,
     noise_schedule="cosine",
-    lr=1e-4,
-    model_path=f"/ceph/scratch/martorellat/guided_diffusion/blobs_{exp_name}/{model}.pt",
+    lr=5e-5,
+    distributional_num_eps_channels=1,
+    num_head_channels=64,
+    use_fp16=True,
+    model_path=f"/ceph/scratch/martorellat/guided_diffusion/curriculum/blobs_{exp_name}/{model}.pt",
     factor=1,  # Factor to resize the image for display
     
-    use_distributional="distributional" in exp_name,
+    use_distributional=True,
     # distributional_lambda=0,
     # distributional_track_terms_regardless_of_lambda=True,
     # distributional_population_size=4,

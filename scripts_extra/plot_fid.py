@@ -100,7 +100,7 @@ def plot_final_figure():
         sampling_modes=["DDIM"],
         # cfg_scales=[0.0, 1.0, 2.0],  # Uncomment if cfg scales are needed
         samples_dir=[
-            f"/ceph/scratch/martorellat/guided_diffusion/samples_{name}"
+            f"/ceph/scratch/martorellat/guided_diffusion/improvements/samples_{name}"
             for name in exp_name
         ],
         plot_out="/ceph/scratch/martorellat/guided_diffusion/figures",

@@ -16,14 +16,24 @@ class EasyDict:
     def __getitem__(self, key):
         return getattr(self, key)
 
-def get_percentage_from_name(name):
+# def get_percentage_from_name(name):
+#     if "baseline" in name:
+#         return 0
+#     parts = name.split("_")
+#     for part in parts:
+#         if "percent" in part:
+#             start_percentage = int(part.replace("percent", "").replace("at", ""))
+#             return 100 - start_percentage
+#     return None
+    
+def get_percentage_from_name(name):    
     if "baseline" in name:
-        return 0
+        return 100
     parts = name.split("_")
     for part in parts:
         if "percent" in part:
             start_percentage = int(part.replace("percent", "").replace("at", ""))
-            return 100 - start_percentage
+            return start_percentage
     return None
 
 def main(args):
@@ -91,6 +101,8 @@ def main(args):
             higher_better.append(metric)
         else:
             lower_better.append(metric)
+            
+    print("culmulative_df", cumulative_df)
     
     group_sorted = cumulative_df.sort_values('percentage')
     percentages = sorted(cumulative_df['percentage'].unique())
@@ -132,10 +144,12 @@ def main(args):
             if metric.lower() in ['precision', 'recall'] and len(precision_recall_metrics) > 1:
                 current_ax.set_ylim(shared_min, shared_max)
         
-        ax1.set_xlabel('Percentage of Distributional Training')
+        ax1.axvline(x=percentages[2], color='black', linestyle='--', linewidth=1.5, alpha=0.8, zorder=3)
+        ax1.set_xlabel('Percentage of Training using Standard Regression Loss')
         ax1.set_title('Higher is Better ↑')
         ax1.set_xticks(percentages)
         ax1.set_xticklabels([f'{p}%' for p in percentages])
+        # ax1.invert_xaxis()  # Reverse the x-axis
         ax1.grid(True, alpha=0.3)
     
     # Plot metrics where lower is better (right subplot)
@@ -168,13 +182,15 @@ def main(args):
             if metric.lower() in ['fid', 'sfid']:
                 current_ax.set_ylim(4, 15)
         
-        ax2.set_xlabel('Percentage of Distributional Training')
+        ax2.axvline(x=percentages[2], color='black', linestyle='--', linewidth=1.5, alpha=0.8, zorder=3)
+        ax2.set_xlabel('Percentage of Training using Standard Regression Loss')
         ax2.set_title('Lower is Better ↓')
         ax2.set_xticks(percentages)
         ax2.set_xticklabels([f'{p}%' for p in percentages])
+        # ax2.invert_xaxis()  # Reverse the x-axis
         ax2.grid(True, alpha=0.3)
     
-    plt.suptitle(f'Metrics vs Percentage of Distributional Training ({args.sampling_steps[0]} steps)', fontsize=16)
+    plt.suptitle(f'Metrics vs Checkpoint of Switch to Distributional Training ({args.sampling_steps[0]} steps)', fontsize=16)
     
     # Save the plot
     metrics_str = "_vs_".join(args.metrics)
@@ -189,7 +205,7 @@ def main(args):
 def create_argparser():
     defaults = dict(
         exp_name=[""],
-        sampling_steps=[30],
+        sampling_steps=[100],
         sampling_modes=["DDIM"],
         metrics=["fid", "inception_score"],
         # cfg_scales=[0.0, 1.0, 2.0],  # Uncomment if cfg scales are needed
@@ -204,7 +220,7 @@ def create_argparser():
 if __name__ == "__main__":
     exp_name = [
         "FINAL_curriculum_baseline",
-        "FINAL2_curriculum_start_at_00percent",
+        "FINAL3_curriculum_start_at_00percent",
         "curriculum_start_at_10percent",
         "curriculum_start_at_20percent",
         "curriculum_start_at_30percent",
@@ -218,7 +234,7 @@ if __name__ == "__main__":
     
     args = EasyDict(dict(
         exp_name=exp_name,
-        sampling_steps=[10],
+        sampling_steps=[250],
         sampling_modes=["DDIM"],
         metrics=["fid", "sfid", "inception_score", "precision", "recall"],
         samples_dir=[
