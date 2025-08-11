@@ -9,6 +9,7 @@
 #SBATCH --time=24:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
 #SBATCH --error=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.err
+#SBATCH --requeue
 
 module purge
 module load cuda/12.4
@@ -40,6 +41,7 @@ NUM_FID_SAMPLES=50000
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/blobs_$EXPERIMENT_NAME"
+export UCX_TLS=tcp,sm
 
 for N_STEPS in "${SAMPLING_STEPS[@]}"
 do
