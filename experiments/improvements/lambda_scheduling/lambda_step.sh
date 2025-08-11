@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=dnwfb___
-#SBATCH --partition=gpu_lowp  # Specify the partition name
+#SBATCH --partition=gpu,gpu_lowp  # Specify the partition name
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
+#SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=4         # Adjust based on your needs
-#SBATCH --gres=gpu:h100:2               # Number of GPUs per node
+#SBATCH --gres=gpu:l40s:4               # Number of GPUs per node
 #SBATCH --mem=48G                  # Adjust based on your needs
 #SBATCH --time=48:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
@@ -46,7 +46,7 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="distributional_lambda_step"
+export EXPERIMENT_NAME="FINAL_distributional_lambda_step"
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/blobs_$EXPERIMENT_NAME"
@@ -78,12 +78,14 @@ if [ "$LOCAL_MODE" = true ]; then
         --distributional_population_size $POPULATION_SIZE \
         --distributional_lambda_weighting step \
         --distributional_num_eps_channels 1 \
-        --num_head_channels 64 \
+        --num_head_channels 32 \
         --use_fp16 True
 
 else
+    export UCX_TLS=tcp,sm
     echo "Running in SLURM mode with $SLURM_GPUS_ON_NODE GPUs"
     mpiexec -n $SLURM_GPUS_ON_NODE -x LD_LIBRARY_PATH -x CUDA_HOME \
+        -x UCX_TLS \
         uv run ./scripts/image_train.py \
             --data_dir $DATA_PATH \
             --image_size 32 \
@@ -102,7 +104,7 @@ else
             --distributional_population_size $POPULATION_SIZE \
             --distributional_lambda_weighting step \
             --distributional_num_eps_channels 1 \
-            --num_head_channels 64 \
+            --num_head_channels 32 \
             --use_fp16 True
 
 fi

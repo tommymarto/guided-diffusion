@@ -35,7 +35,7 @@ echo "Checkpoint step: $CHECKPOINT_STEP"
 
 SAMPLING_STEPS=(5 10 20 30 50)
 CFG_SCALES=(0.0)
-SAMPLING_MODE="DDIM"
+SAMPLING_MODES=("DDIM" "iDDPM")
 NUM_FID_SAMPLES=50000
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/logs_$EXPERIMENT_NAME"
@@ -52,7 +52,7 @@ do
         N_STEPS_FORMATTED=$N_STEPS
         if [ "$SAMPLING_MODE" = "DDIM" ]; then
             USE_DDIM="True"
-            N_STEPS_FORMATTED="ddim$N_STEPS"
+            N_STEPS_FORMATTED="$N_STEPS"
         fi
         (
             export LD_LIBRARY_PATH=$PYTORCH_LIB_PATH:$VENV_CUDNN_LIB_PATH:$LD_LIBRARY_PATH

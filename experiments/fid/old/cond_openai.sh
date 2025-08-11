@@ -21,7 +21,7 @@ echo "Checkpoint step: $CHECKPOINT_STEP"
 
 SAMPLING_STEPS=(2 3 4 5 10 30 50 100 250 500 1000)
 CFG_SCALES=(0.0)
-SAMPLING_MODE="DDIM"
+SAMPLING_MODES=("DDIM" "iDDPM")
 NUM_FID_SAMPLES=50000
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/logs_$EXPERIMENT_NAME"
@@ -38,7 +38,7 @@ do
         N_STEPS_FORMATTED=$N_STEPS
         if [ "$SAMPLING_MODE" = "DDIM" ]; then
             USE_DDIM="True"
-            N_STEPS_FORMATTED="ddim$N_STEPS"
+            N_STEPS_FORMATTED="$N_STEPS"
         fi
         uv run python \
             scripts/image_sample.py \

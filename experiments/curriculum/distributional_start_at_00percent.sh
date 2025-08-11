@@ -46,7 +46,7 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="FINAL2_curriculum_start_at_00percent"
+export EXPERIMENT_NAME="FINAL3_curriculum_start_at_00percent"
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/curriculum/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/curriculum/blobs_$EXPERIMENT_NAME"
@@ -77,7 +77,7 @@ if [ "$LOCAL_MODE" = true ]; then
         --distributional_loss_weighting NO_WEIGHTING \
         --distributional_population_size $POPULATION_SIZE \
         --distributional_num_eps_channels 1 \
-        --num_head_channels 64 \
+        --num_head_channels 32 \
         --use_fp16 True
 
 else
@@ -100,7 +100,7 @@ else
             --distributional_loss_weighting NO_WEIGHTING \
             --distributional_population_size $POPULATION_SIZE \
             --distributional_num_eps_channels 1 \
-            --num_head_channels 64 \
+            --num_head_channels 32 \
             --use_fp16 True
 
 fi

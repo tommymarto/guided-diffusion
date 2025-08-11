@@ -5,10 +5,11 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4         # Adjust based on your needs
 #SBATCH --gres=gpu:h100:1               # Number of GPUs per node
-#SBATCH --mem=48G                  # Adjust based on your needs
+#SBATCH --mem=24G                  # Adjust based on your needs
 #SBATCH --time=24:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
 #SBATCH --error=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.err
+#SBATCH --requeue
 
 module purge
 module load cuda/12.4
@@ -36,7 +37,7 @@ echo "Checkpoint step: $CHECKPOINT_STEP"
 
 SAMPLING_STEPS=(5 10 20 30 50)
 CFG_SCALES=(0.0)
-SAMPLING_MODE="DDIM"
+SAMPLING_MODES=("DDIM" "iDDPM")
 NUM_FID_SAMPLES=50000
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/logs_$EXPERIMENT_NAME"
@@ -44,8 +45,9 @@ export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/blobs_$EXPERIM
 
 for N_STEPS in "${SAMPLING_STEPS[@]}"
 do
-    for CFG_SCALE in "${CFG_SCALES[@]}"
+    for SAMPLING_MODE in "${SAMPLING_MODES[@]}"
     do
+        CFG_SCALE=0.0
         echo "Running sampling with $N_STEPS steps and CFG scale $CFG_SCALE"
         export OPENAI_SAMPLESDIR="/ceph/scratch/martorellat/guided_diffusion/samples_$EXPERIMENT_NAME/$SAMPLING_MODE-steps-$N_STEPS"
         # Set number of processes per node based on local mode
@@ -53,7 +55,7 @@ do
         N_STEPS_FORMATTED=$N_STEPS
         if [ "$SAMPLING_MODE" = "DDIM" ]; then
             USE_DDIM="True"
-            N_STEPS_FORMATTED="ddim$N_STEPS"
+            N_STEPS_FORMATTED="$N_STEPS"
         fi
         python \
             scripts/image_sample.py \

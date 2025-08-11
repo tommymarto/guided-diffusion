@@ -3,7 +3,6 @@
 #SBATCH --partition=gpu_lowp  # Specify the partition name
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=6         # Adjust based on your needs
 #SBATCH --gres=gpu:h100:1               # Number of GPUs per node
 #SBATCH --mem=48G                  # Adjust based on your needs
 #SBATCH --time=48:00:00            # Adjust based on your needs
@@ -46,7 +45,7 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="distributional_lambda_dynamical_linear"
+export EXPERIMENT_NAME="AAAFINAL_distributional_lambda_dynamical_linear"
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/blobs_$EXPERIMENT_NAME"
@@ -78,7 +77,7 @@ if [ "$LOCAL_MODE" = true ]; then
         --distributional_population_size $POPULATION_SIZE \
         --distributional_lambda_weighting dynamical_linear \
         --distributional_num_eps_channels 1 \
-        --num_head_channels 64 \
+        --num_head_channels 32 \
         --use_fp16 True
 
 else
@@ -102,7 +101,7 @@ else
             --distributional_population_size $POPULATION_SIZE \
             --distributional_lambda_weighting dynamical_linear \
             --distributional_num_eps_channels 1 \
-            --num_head_channels 64 \
+            --num_head_channels 32 \
             --use_fp16 True
 
 fi
