@@ -613,13 +613,14 @@ class GaussianDiffusion:
 
             indices = tqdm(indices)
 
+        if self.use_distributional:
+            eps = th.randn_like(img)
+            eps = eps[:, :self.distributional_num_eps_channels, ...]
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
                 if self.use_distributional:
-                    eps = th.randn_like(img)
-                    eps = eps[:, :self.distributional_num_eps_channels, ...]
-                    model_kwargs["eps"] = eps
+                    model_kwargs["eps"] = eps.clone()
                 out = self.p_sample(
                     model,
                     img,
@@ -788,13 +789,14 @@ class GaussianDiffusion:
 
             indices = tqdm(indices)
 
+        if self.use_distributional:
+            eps = th.randn_like(img)
+            eps = eps[:, :self.distributional_num_eps_channels, ...]
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
                 if self.use_distributional:
-                    eps = th.randn_like(img)
-                    eps = eps[:, :self.distributional_num_eps_channels, ...]
-                    model_kwargs["eps"] = eps
+                    model_kwargs["eps"] = eps.clone()
                 out = self.ddim_sample(
                     model,
                     img,
