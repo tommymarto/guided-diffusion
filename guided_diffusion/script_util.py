@@ -4,6 +4,7 @@ import json
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 from .unet import UNetModel
+from .original_unet import UNetModel as UNetOriginalModel
 
 NUM_CLASSES = 1000
 
@@ -73,6 +74,7 @@ def model_and_diffusion_defaults():
         use_fp16=False,
         use_new_attention_order=False,
         num_classes=NUM_CLASSES,
+        use_original_unet=False,
     )
     res.update(diffusion_defaults())
     return res
@@ -116,7 +118,8 @@ def create_model_and_diffusion(
     distributional_num_eps_channels,
     dispersion_loss_type,
     dispersion_loss_weight,
-    dispersion_loss_last_act_only
+    dispersion_loss_last_act_only,
+    use_original_unet
 ):
     model = create_model(
         image_size,
@@ -138,6 +141,7 @@ def create_model_and_diffusion(
         num_classes=num_classes,
         use_distributional=use_distributional,
         distributional_num_eps_channels=distributional_num_eps_channels,
+        use_original_unet=use_original_unet,
     )
     diffusion = create_gaussian_diffusion(
         steps=diffusion_steps,
@@ -185,6 +189,7 @@ def create_model(
     num_classes=NUM_CLASSES,
     use_distributional=False,
     distributional_num_eps_channels=1,
+    use_original_unet=False,
 ):
     if channel_mult == "":
         if image_size == 512:
@@ -206,7 +211,12 @@ def create_model(
     for res in attention_resolutions.split(","):
         attention_ds.append(image_size // int(res))
 
-    return UNetModel(
+    if use_original_unet:
+        ModelClass = UNetOriginalModel
+    else:
+        ModelClass = UNetModel
+    
+    return ModelClass(
         image_size=image_size,
         in_channels=3,
         model_channels=num_channels,

@@ -104,6 +104,7 @@ class LossType(enum.Enum):
 class DispersionLossType(enum.Enum):
     NONE = enum.auto()  # no dispersion loss
     INTERACTION = enum.auto()  # interaction-based dispersion loss
+    INTERACTION_WITHOUT_PIXEL_SPACE = enum.auto()  # interaction-based dispersion loss without pixel space
 
     def __str__(self):
         return self.name.replace("_", " ").title()
@@ -932,7 +933,7 @@ class GaussianDiffusion:
 
             if self.dispersion_loss_type is not DispersionLossType.NONE:
                 # Calculate the dispersion term.
-                if self.dispersion_loss_type == DispersionLossType.INTERACTION:
+                if self.dispersion_loss_type in [DispersionLossType.INTERACTION, DispersionLossType.INTERACTION_WITHOUT_PIXEL_SPACE]:
                     # first let's normalize the acts
                     acts_population = [a / th.norm(a, dim=1, keepdim=True) for a in acts_population]
                     acts = [rearrange(acts_population[i], "(n m) ... -> n m ...", m=m) for i in range(len(acts_population))]
@@ -1001,6 +1002,10 @@ class GaussianDiffusion:
 
             terms["loss"] = terms["loss"] + terms.get("vb", 0)
             terms["loss"] = terms["loss"] + terms.get("dispersion", 0)
+
+            # quick and dirty way to discard the interaction term in pixel space
+            if self.dispersion_loss_type == DispersionLossType.INTERACTION_WITHOUT_PIXEL_SPACE:
+                terms["loss"] = -terms["confinement_term"] - terms["dispersion"]
 
         else:
             raise NotImplementedError(self.loss_type)
