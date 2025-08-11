@@ -182,56 +182,56 @@ def main(args):
     model.eval()
 
     logger.log("sampling...")
-    # model_kwargs = {}
-    # if args.class_cond:
-    #     classes = th.tensor([i for i in range(args.num_classes)] * 4, dtype=th.long, device=device)
-    #     model_kwargs["y"] = classes
-    # sample_fn = (
-    #     diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
-    # )
-    # sample = sample_fn(
-    #     model,
-    #     (args.batch_size, 3, args.image_size, args.image_size),
-    #     clip_denoised=args.clip_denoised,
-    #     model_kwargs=model_kwargs,
-    #     progress=True
-    # )
-    # # sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
-    # # sample = sample.permute(0, 2, 3, 1)
-    # # sample = sample.contiguous()
+    model_kwargs = {}
+    if args.class_cond:
+        classes = th.tensor([i for i in range(args.num_classes)] * 4, dtype=th.long, device=device)
+        model_kwargs["y"] = classes
+    sample_fn = (
+        diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
+    )
+    sample = sample_fn(
+        model,
+        (args.batch_size, 3, args.image_size, args.image_size),
+        clip_denoised=args.clip_denoised,
+        model_kwargs=model_kwargs,
+        progress=True
+    )
+    # sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
+    # sample = sample.permute(0, 2, 3, 1)
+    # sample = sample.contiguous()
     
-    # display_image_grid(sample, display=True, nrow=10, normalize=True, value_range=(-1, 1), factor=args.factor)
+    display_image_grid(sample, display=True, nrow=10, normalize=True, value_range=(-1, 1), factor=args.factor)
 
     
-    # classes = th.tensor([i for i in range(args.num_classes)], dtype=th.long, device=device)
-    # model_kwargs["y"] = classes
-    # sample_fn = (
-    #     diffusion.p_sample_loop_progressive if not args.use_ddim else diffusion.ddim_sample_loop_progressive
-    # )
-    # x0_preds_progressive = []
-    # for i, sample in enumerate(
-    #     sample_fn(
-    #         model,
-    #         (args.num_classes, 3, args.image_size, args.image_size),
-    #         clip_denoised=args.clip_denoised,
-    #         model_kwargs=model_kwargs,
-    #         progress=True
-    #     )
-    # ): 
-    #     # sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
-    #     # sample = sample.permute(0, 2, 3, 1)
-    #     # sample = sample.contiguous()
-    #     x0_preds_progressive.append(sample["pred_xstart"])
+    classes = th.tensor([i for i in range(args.num_classes)], dtype=th.long, device=device)
+    model_kwargs["y"] = classes
+    sample_fn = (
+        diffusion.p_sample_loop_progressive if not args.use_ddim else diffusion.ddim_sample_loop_progressive
+    )
+    x0_preds_progressive = []
+    for i, sample in enumerate(
+        sample_fn(
+            model,
+            (args.num_classes, 3, args.image_size, args.image_size),
+            clip_denoised=args.clip_denoised,
+            model_kwargs=model_kwargs,
+            progress=True
+        )
+    ): 
+        # sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
+        # sample = sample.permute(0, 2, 3, 1)
+        # sample = sample.contiguous()
+        x0_preds_progressive.append(sample["pred_xstart"])
         
-    # x0_preds_progressive = th.stack(x0_preds_progressive, dim=0)
+    x0_preds_progressive = th.stack(x0_preds_progressive, dim=0)
     
-    # # Select 10 evenly spaced timesteps, including first and last
-    # indices = th.linspace(0, len(x0_preds_progressive) - 1, 10).long()
-    # x0_preds_progressive = x0_preds_progressive[indices]
+    # Select 10 evenly spaced timesteps, including first and last
+    indices = th.linspace(0, len(x0_preds_progressive) - 1, 10).long()
+    x0_preds_progressive = x0_preds_progressive[indices]
     
-    # x0_preds_progressive = rearrange(x0_preds_progressive, 't b c h w -> (b t) c h w')
+    x0_preds_progressive = rearrange(x0_preds_progressive, 't b c h w -> (b t) c h w')
     
-    # display_image_grid(x0_preds_progressive, display=True, nrow=10, normalize=True, value_range=(-1, 1), factor=args.factor)
+    display_image_grid(x0_preds_progressive, display=True, nrow=10, normalize=True, value_range=(-1, 1), factor=args.factor)
     
     
     data = load_data(
@@ -274,7 +274,7 @@ def main(args):
 # exp_name = "cifar10_cond_distributional_noweighting_lambda_linear"
 # exp_name = "cifar10_cond_distributional_noweighting_eps_pred"
 # exp_name = "cifar10_cond_distributional_noweighting_eps_pred"
-exp_name = "curriculum_start_at_20percent"
+exp_name = "AAAFINAL2_distributional_lambda_dynamical_step"
 checkpoint_iter = 300_000
 ema = True
 model = f"ema_0.9999_{checkpoint_iter}" if ema else f"model{checkpoint_iter}" 
@@ -289,7 +289,7 @@ defaults = dict(
     learn_sigma=True,
     diffusion_steps=4000,
     use_ddim=True,
-    timestep_respacing="ddim500",
+    timestep_respacing="ddim50",
     class_cond="uncond" not in exp_name,
     predict_xstart=False,
     noise_schedule="cosine",
@@ -297,8 +297,8 @@ defaults = dict(
     distributional_num_eps_channels=1,
     num_head_channels=64,
     use_fp16=True,
-    model_path=f"/ceph/scratch/martorellat/guided_diffusion/curriculum/blobs_{exp_name}/{model}.pt",
-    factor=1,  # Factor to resize the image for display
+    model_path=f"/ceph/scratch/martorellat/guided_diffusion/improvements/blobs_{exp_name}/{model}.pt",
+    factor=4,  # Factor to resize the image for display
     
     use_distributional=True,
     # distributional_lambda=0,

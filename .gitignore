@@ -8,3 +8,4 @@ wandb
 logs
 outputs
 experiments/old
+scripts_extra/plots

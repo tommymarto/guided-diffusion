@@ -14,8 +14,8 @@ ENTITY_NAME = "tommaso_research"
 
 # Run and Metric Configuration
 RUN_NAME = "FINAL2_curriculum_baseline"  # The specific run you want to plot
-RUN_ID = 10919215                            # Alternative: use run ID instead of name (set RUN_NAME to None if using this)
-                                         # Example: RUN_ID = "87260050" and RUN_NAME = None
+RUN_ID = 10919215                            # Alternative: use run ID instead of name (this will take precedence over RUN_NAME)
+RUN_ID = 44877511                            # Alternative: use run ID instead of name (this will take precedence over RUN_NAME)
 
 # Plot Customization
 FIGURE_SIZE = (12, 9)          # Figure size (width, height)
@@ -57,23 +57,23 @@ USE_20_PERCENT_LINE = False
 # USE_20_PERCENT_LINE = True
 
 ##### INTERACTION OVER CONFINEMENT PLOT CONFIGURATION ######
-# METRIC_NAME = "interaction_over_confinement"
-# METRIC_DISPLAY_NAME = "Interaction / Confinement"
-# Y_MIN = 0.02
-# Y_MAX = 0.1
-# USE_LOG_SCALE_Y = True
-# USE_LOG_SCALE_X = False
-# USE_20_PERCENT_LINE = True
-
-##### MSE PLOT CONFIGURATION ######
-METRIC_NAME = "confinement_term"
-METRIC_DISPLAY_NAME = "Mean Squared Error (Confinement Term)"
-Y_MIN = 0.03
-Y_MAX = 0.2
+METRIC_NAME = "interaction_over_confinement"
+METRIC_DISPLAY_NAME = "Interaction / Confinement"
+Y_MIN = 0.02
+Y_MAX = 0.1
 USE_LOG_SCALE_Y = True
 USE_LOG_SCALE_X = False
 USE_20_PERCENT_LINE = True
-FIGURE_SIZE = (12, 6)
+
+##### MSE PLOT CONFIGURATION ######
+# METRIC_NAME = "confinement_term"
+# METRIC_DISPLAY_NAME = "Mean Squared Error (Confinement Term)"
+# Y_MIN = 0.03
+# Y_MAX = 0.2
+# USE_LOG_SCALE_Y = True
+# USE_LOG_SCALE_X = False
+# USE_20_PERCENT_LINE = True
+# FIGURE_SIZE = (12, 6)
 
 # ==================== FUNCTIONS ====================
 
@@ -388,3 +388,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+# %%

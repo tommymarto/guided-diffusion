@@ -234,7 +234,7 @@ if __name__ == "__main__":
     
     args = EasyDict(dict(
         exp_name=exp_name,
-        sampling_steps=[250],
+        sampling_steps=[50],
         sampling_modes=["DDIM"],
         metrics=["fid", "sfid", "inception_score", "precision", "recall"],
         samples_dir=[
