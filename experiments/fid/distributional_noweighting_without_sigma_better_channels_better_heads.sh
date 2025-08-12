@@ -77,7 +77,8 @@ do
                 --use_ddim $USE_DDIM \
                 --timestep_respacing $N_STEPS_FORMATTED \
                 --num_samples $NUM_FID_SAMPLES \
-                --exp_name $EXPERIMENT_NAME
+                --exp_name $EXPERIMENT_NAME \
+                --use_same_noise_in_sampling $USE_SAME_NOISE
         )
 
         # Important to cd because we have another venv inside evaulations

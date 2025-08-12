@@ -36,7 +36,8 @@ echo "Checkpoint step: $CHECKPOINT_STEP"
 
 SAMPLING_STEPS=(5 10 20 30 50)
 CFG_SCALES=(0.0)
-SAMPLING_MODES=("DDIM" "iDDPM")
+# SAMPLING_MODES=("DDIM" "iDDPM" "DDIM_diff_noise" "iDDPM_diff_noise")
+SAMPLING_MODES=("DDIM_diff_noise" "iDDPM_diff_noise")
 NUM_FID_SAMPLES=50000
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/curriculum/logs_$EXPERIMENT_NAME"
@@ -53,14 +54,28 @@ do
         # Set number of processes per node based on local mode
         USE_DDIM="False"
         N_STEPS_FORMATTED=$N_STEPS
+        USE_SAME_NOISE="False"
         if [ "$SAMPLING_MODE" = "DDIM" ]; then
             USE_DDIM="True"
             N_STEPS_FORMATTED="ddim$N_STEPS"
+            USE_SAME_NOISE="True"
         fi
         if [ "$SAMPLING_MODE" = "iDDPM" ]; then
             USE_DDIM="True"
             N_STEPS_FORMATTED="$N_STEPS"
+            USE_SAME_NOISE="True"
         fi
+        if [ "$SAMPLING_MODE" = "DDIM_diff_noise" ]; then
+            USE_DDIM="True"
+            N_STEPS_FORMATTED="ddim$N_STEPS"
+            USE_SAME_NOISE="False"
+        fi
+        if [ "$SAMPLING_MODE" = "iDDPM_diff_noise" ]; then
+            USE_DDIM="True"
+            N_STEPS_FORMATTED="$N_STEPS"
+            USE_SAME_NOISE="False"
+        fi
+        
         (
             export LD_LIBRARY_PATH=$PYTORCH_LIB_PATH:$VENV_CUDNN_LIB_PATH:$LD_LIBRARY_PATH
             export CUDA_HOME="/ceph/apps/ubuntu-24/packages/cuda/12.4.0_550.54.14"
@@ -85,7 +100,8 @@ do
                 --use_ddim $USE_DDIM \
                 --timestep_respacing $N_STEPS_FORMATTED \
                 --num_samples $NUM_FID_SAMPLES \
-                --exp_name $EXPERIMENT_NAME
+                --exp_name $EXPERIMENT_NAME \
+                --use_same_noise_in_sampling $USE_SAME_NOISE
         )
 
         # Important to cd because we have another venv inside evaulations
