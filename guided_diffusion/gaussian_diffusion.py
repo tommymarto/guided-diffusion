@@ -191,11 +191,14 @@ class GaussianDiffusion:
         dispersion_loss_weight=0.5,
         dispersion_loss_last_act_only=False,
         distributional_num_eps_channels=1,
+        use_same_noise_in_sampling=False,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
+        
+        self.use_same_noise_in_sampling = use_same_noise_in_sampling
 
         self.use_distributional = loss_type == LossType.DISTRIBUTIONAL
         self.distributional_track_terms_regardless_of_lambda = distributional_track_terms_regardless_of_lambda
@@ -620,6 +623,9 @@ class GaussianDiffusion:
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
                 if self.use_distributional:
+                    if not self.use_same_noise_in_sampling:
+                        eps = th.randn_like(img)
+                        eps = eps[:, :self.distributional_num_eps_channels, ...]
                     model_kwargs["eps"] = eps.clone()
                 out = self.p_sample(
                     model,
@@ -796,6 +802,9 @@ class GaussianDiffusion:
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
                 if self.use_distributional:
+                    if not self.use_same_noise_in_sampling:
+                        eps = th.randn_like(img)
+                        eps = eps[:, :self.distributional_num_eps_channels, ...]
                     model_kwargs["eps"] = eps.clone()
                 out = self.ddim_sample(
                     model,

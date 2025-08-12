@@ -556,6 +556,8 @@ def create_generalized_kernel_score(
         "sigmoid": SigmoidScheduleNormalized(num_timesteps=num_timesteps),
         "sigmoid_shifted": SigmoidScheduleShiftedNormalized(num_timesteps=num_timesteps),
         "step": StepScheduleNormalized(num_timesteps=num_timesteps),
+        "step_03": StepScheduleNormalized(num_timesteps=num_timesteps, step=0.3),
+        "step_05": StepScheduleNormalized(num_timesteps=num_timesteps, step=0.5),
         "dynamical_linear": DynamicalRegimesScheduleNormalizedWithLinearInterpolation(num_timesteps=num_timesteps),
         "dynamical_cosine": DynamicalRegimesScheduleNormalizedWithCosineInterpolation(num_timesteps=num_timesteps),
         "dynamical_sigmoid": DynamicalRegimesScheduleNormalizedWithSigmoidInterpolation(num_timesteps=num_timesteps),

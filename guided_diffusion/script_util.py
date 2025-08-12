@@ -49,7 +49,8 @@ def diffusion_defaults():
         distributional_num_eps_channels=1,
         dispersion_loss_type="none",
         dispersion_loss_weight=0.5,
-        dispersion_loss_last_act_only=False
+        dispersion_loss_last_act_only=False,
+        use_same_noise_in_sampling=False
     )
 
 
@@ -119,7 +120,8 @@ def create_model_and_diffusion(
     dispersion_loss_type,
     dispersion_loss_weight,
     dispersion_loss_last_act_only,
-    use_original_unet
+    use_original_unet,
+    use_same_noise_in_sampling
 ):
     model = create_model(
         image_size,
@@ -164,7 +166,8 @@ def create_model_and_diffusion(
         distributional_num_eps_channels=distributional_num_eps_channels,
         dispersion_loss_type=dispersion_loss_type,
         dispersion_loss_weight=dispersion_loss_weight,
-        dispersion_loss_last_act_only=dispersion_loss_last_act_only
+        dispersion_loss_last_act_only=dispersion_loss_last_act_only,
+        use_same_noise_in_sampling=use_same_noise_in_sampling
     )
     return model, diffusion
 
@@ -262,7 +265,8 @@ def create_gaussian_diffusion(
     distributional_num_eps_channels=1,
     dispersion_loss_type="none",
     dispersion_loss_weight=0.5,
-    dispersion_loss_last_act_only=False
+    dispersion_loss_last_act_only=False,
+    use_same_noise_in_sampling=False
 ):
     betas = gd.get_named_beta_schedule(noise_schedule, steps)
     if use_kl:
@@ -303,7 +307,8 @@ def create_gaussian_diffusion(
         distributional_num_eps_channels=distributional_num_eps_channels,
         dispersion_loss_type=gd.DispersionLossType[dispersion_loss_type.upper()],
         dispersion_loss_weight=dispersion_loss_weight,
-        dispersion_loss_last_act_only=dispersion_loss_last_act_only
+        dispersion_loss_last_act_only=dispersion_loss_last_act_only,
+        use_same_noise_in_sampling=use_same_noise_in_sampling,
     )
 
 
