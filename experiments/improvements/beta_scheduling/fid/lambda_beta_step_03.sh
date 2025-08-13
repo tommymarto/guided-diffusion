@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=fid-evaluation
-#SBATCH --partition=gpu_lowp  # Specify the partition name
+#SBATCH --partition=a100,gpu_lowp  # Specify the partition name
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4         # Adjust based on your needs
-#SBATCH --gres=gpu:h100:1               # Number of GPUs per node
+#SBATCH --gres=gpu:1               # Number of GPUs per node
 #SBATCH --mem=24G                  # Adjust based on your needs
 #SBATCH --time=24:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
@@ -29,7 +29,7 @@ source $VENV_PATH/bin/activate
 set -o errexit
 
 EXPERIMENT_NAME="distributional_lambda_beta_step_03"
-CHECKPOINT_STEP="300000"
+CHECKPOINT_STEP="180000"
 
 echo "Checkpoint: $EXPERIMENT_NAME"
 echo "Checkpoint step: $CHECKPOINT_STEP"

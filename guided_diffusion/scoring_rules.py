@@ -179,6 +179,24 @@ class GeneralizedKernelScore(nn.Module):
         self.interaction_kwargs = self.kernel_kwargs["interaction_term"] if "interaction_term" in self.kernel_kwargs else self.kernel_kwargs
         self.confinement_kwargs = self.kernel_kwargs["confinement_term"] if "confinement_term" in self.kernel_kwargs else self.kernel_kwargs
 
+        if not isinstance(beta_schedule, ConstantScheduleNormalized):
+            assert (
+                "beta_start" in self.interaction_kwargs
+                and "beta_end" in self.interaction_kwargs
+                and "beta" not in self.interaction_kwargs
+            ), "If beta_schedule is not ConstantScheduleNormalized, beta_start and beta_end must be specified instead of beta. (interaction_term)"
+            assert (
+                "beta_start" in self.confinement_kwargs
+                and "beta_end" in self.confinement_kwargs
+                and "beta" not in self.confinement_kwargs
+            ), "If beta_schedule is not ConstantScheduleNormalized, beta_start and beta_end must be specified instead of beta. (confinement_term)"
+        else:
+            logger.info("Using constant beta schedule, overriding beta_start and beta_end with beta.")
+            self.interaction_kwargs["beta_start"] = self.interaction_kwargs["beta"]
+            self.interaction_kwargs["beta_end"] = self.interaction_kwargs["beta"]
+            self.confinement_kwargs["beta_start"] = self.confinement_kwargs["beta"]
+            self.confinement_kwargs["beta_end"] = self.confinement_kwargs["beta"]
+
         self.use_scoring_rule_self_rebalancing = (
             self.kernel_kwargs["norm_based_rebalancing"]["enabled"]
             if "norm_based_rebalancing" in self.kernel_kwargs
@@ -212,9 +230,14 @@ class GeneralizedKernelScore(nn.Module):
 
     def get_scheduled_beta(self, t, kwargs, m):
         local_t = repeat(t, "b -> (b k)", k=m)
-        beta_start = kwargs.get("beta_start", kwargs["beta"])
-        beta = kwargs["beta"]
-        return beta_start * self.beta_schedule(local_t) + beta * (1 - self.beta_schedule(local_t))
+        beta_start = kwargs["beta_start"]
+        beta_end = kwargs["beta_end"]
+        
+        # ideally beta_start = 1 and beta_end = 2
+        # so it reduces to 1 * l(t) + 2 * (1 - l(t))
+        # so when l(t) is zero (for small t), we have beta_end
+        # when l(t) is one (for large t), we have beta_start
+        return beta_start * self.beta_schedule(local_t) + beta_end * (1 - self.beta_schedule(local_t))
 
     def compute_rho(self, x: torch.Tensor, y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         m: int = self.population_size  # Python constant
@@ -395,7 +418,7 @@ class StepScheduleNormalized(LambdaSchedule):
 class DynamicalRegimesScheduleNormalized(LambdaSchedule):
     """Dynamical regimes schedule normalized to [0, 1]."""
 
-    def __init__(self, num_timesteps: int, interpolation: LambdaSchedule, regimes=(0.6420, 0.9115)):
+    def __init__(self, num_timesteps: int, interpolation: LambdaSchedule, regimes=(0.1032, 0.9135)):
         super().__init__(num_timesteps)
         self.regimes = regimes
         self.interpolation = interpolation
@@ -447,7 +470,7 @@ def DynamicalRegimesScheduleNormalizedWithLinearInterpolation(num_timesteps: int
     return DynamicalRegimesScheduleNormalized(
         num_timesteps=num_timesteps,
         interpolation=LinearScheduleNormalized(num_timesteps=num_timesteps),
-        regimes=(0.6420, 0.9115)
+        regimes=(0.1032, 0.9135)
     )
     
 def DynamicalRegimesScheduleNormalizedWithCosineInterpolation(num_timesteps: int):
@@ -463,7 +486,7 @@ def DynamicalRegimesScheduleNormalizedWithCosineInterpolation(num_timesteps: int
     return DynamicalRegimesScheduleNormalized(
         num_timesteps=num_timesteps,
         interpolation=CosineScheduleNormalized(num_timesteps=num_timesteps),
-        regimes=(0.6420, 0.9115)
+        regimes=(0.1032, 0.9135)
     )
     
 def DynamicalRegimesScheduleNormalizedWithSigmoidInterpolation(num_timesteps: int):
@@ -479,7 +502,7 @@ def DynamicalRegimesScheduleNormalizedWithSigmoidInterpolation(num_timesteps: in
     return DynamicalRegimesScheduleNormalized(
         num_timesteps=num_timesteps,
         interpolation=SigmoidScheduleNormalized(num_timesteps=num_timesteps),
-        regimes=(0.6420, 0.9115)
+        regimes=(0.1032, 0.9135)
     )
     
 def DynamicalRegimesScheduleNormalizedWithSigmoidShiftedInterpolation(num_timesteps: int):
@@ -495,7 +518,7 @@ def DynamicalRegimesScheduleNormalizedWithSigmoidShiftedInterpolation(num_timest
     return DynamicalRegimesScheduleNormalized(
         num_timesteps=num_timesteps,
         interpolation=SigmoidScheduleShiftedNormalized(num_timesteps=num_timesteps),
-        regimes=(0.6420, 0.9115)
+        regimes=(0.1032, 0.9135)
     )
     
 def DynamicalRegimesScheduleNormalizedWithStepInterpolation(num_timesteps: int):
@@ -511,7 +534,7 @@ def DynamicalRegimesScheduleNormalizedWithStepInterpolation(num_timesteps: int):
     return DynamicalRegimesScheduleNormalized(
         num_timesteps=num_timesteps,
         interpolation=StepScheduleNormalized(num_timesteps=num_timesteps),
-        regimes=(0.6420, 0.9115)
+        regimes=(0.1032, 0.9135)
     )
 
 
@@ -556,7 +579,10 @@ def create_generalized_kernel_score(
         "sigmoid": SigmoidScheduleNormalized(num_timesteps=num_timesteps),
         "sigmoid_shifted": SigmoidScheduleShiftedNormalized(num_timesteps=num_timesteps),
         "step": StepScheduleNormalized(num_timesteps=num_timesteps),
+        "step_01": StepScheduleNormalized(num_timesteps=num_timesteps, step=0.1),
+        "step_02": StepScheduleNormalized(num_timesteps=num_timesteps, step=0.2),
         "step_03": StepScheduleNormalized(num_timesteps=num_timesteps, step=0.3),
+        "step_04": StepScheduleNormalized(num_timesteps=num_timesteps, step=0.4),
         "step_05": StepScheduleNormalized(num_timesteps=num_timesteps, step=0.5),
         "dynamical_linear": DynamicalRegimesScheduleNormalizedWithLinearInterpolation(num_timesteps=num_timesteps),
         "dynamical_cosine": DynamicalRegimesScheduleNormalizedWithCosineInterpolation(num_timesteps=num_timesteps),

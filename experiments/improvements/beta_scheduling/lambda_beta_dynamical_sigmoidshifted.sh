@@ -45,7 +45,7 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="AAAFINAL_distributional_lambda_beta_dynamical_sigmoid_shifted"
+export EXPERIMENT_NAME="BBB_distributional_lambda_beta_dynamical_sigmoid_shifted"
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/blobs_$EXPERIMENT_NAME"

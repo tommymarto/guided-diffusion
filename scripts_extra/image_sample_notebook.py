@@ -4,6 +4,7 @@ Generate a large batch of image samples from a model and save them as a large
 numpy array. This can be used to produce samples for FID evaluation.
 """
 
+from functools import partial
 import os
 
 from einops import rearrange, repeat
@@ -12,8 +13,9 @@ import torch as th
 # import torch.distributed as dist
 from PIL import Image
 from torchvision.utils import make_grid
+from tqdm import tqdm
 from guided_diffusion import logger
-from guided_diffusion.gaussian_diffusion import GaussianDiffusion
+from guided_diffusion.gaussian_diffusion import GaussianDiffusion, _extract_into_tensor
 from guided_diffusion.image_datasets import load_data
 from guided_diffusion.script_util import (
     model_and_diffusion_defaults,
@@ -161,6 +163,64 @@ def timestamp_sample(
     
     return combined_img
 
+def custom_ddim_sample_loop(
+    diffusion,
+    model,
+    model2,
+    shape,
+    noise=None,
+    clip_denoised=True,
+    denoised_fn=None,
+    cond_fn=None,
+    model_kwargs=None,
+    device=None,
+    progress=False,
+    switch_model_at=-1,
+    eta=0.0,
+):
+    if device is None:
+        device = next(model.parameters()).device
+    assert isinstance(shape, (tuple, list))
+    if noise is not None:
+        img = noise
+    else:
+        img = th.randn(*shape, device=device)
+    indices = list(range(diffusion.num_timesteps))[::-1]
+
+    if progress:
+        # Lazy import so that we don't depend on tqdm.
+        from tqdm.auto import tqdm
+
+        indices = tqdm(indices)
+    
+    model_to_use = model
+
+    if diffusion.use_distributional:
+        eps = th.randn_like(img)
+        eps = eps[:, :diffusion.distributional_num_eps_channels, ...]
+    for i in indices:
+        if i < switch_model_at:
+            model_to_use = model2
+        t = th.tensor([i] * shape[0], device=device)
+        with th.no_grad():
+            if diffusion.use_distributional:
+                if not diffusion.use_same_noise_in_sampling:
+                    eps = th.randn_like(img)
+                    eps = eps[:, :diffusion.distributional_num_eps_channels, ...]
+                model_kwargs["eps"] = eps.clone()
+            out = diffusion.ddim_sample(
+                model_to_use,
+                img,
+                t,
+                clip_denoised=clip_denoised,
+                denoised_fn=denoised_fn,
+                cond_fn=cond_fn,
+                model_kwargs=model_kwargs,
+                eta=eta,
+            )
+            img = out["sample"]
+    return img
+
 
 def main(args):
     seed_everything(args.seed)
@@ -172,93 +232,157 @@ def main(args):
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
     
-    device = "cuda" if th.cuda.is_available() else "cpu"
+    print(np.log((diffusion.sqrt_alphas_cumprod ** 2) / (diffusion.sqrt_one_minus_alphas_cumprod ** 2)))
     
-    model.load_state_dict(
-        th.load(args.model_path, map_location="cpu") if args.model_path else {}
-    )
-    model.to(device)
-    model.convert_to_fp16()
-    model.eval()
+    # device = "cuda" if th.cuda.is_available() else "cpu"
+    
+    # model.load_state_dict(
+    #     th.load(args.model_path, map_location="cpu") if args.model_path else {}
+    # )
+    # model.to(device)
+    # model.convert_to_fp16()
+    # model.eval()
+    
+    # model2, diffusion = create_model_and_diffusion(
+    #     **args_to_dict(args, model_and_diffusion_defaults().keys())
+    # )
+    
+    # model2.load_state_dict(
+    #     th.load(args.model_path_2, map_location="cpu") if args.model_path_2 else {}
+    # )
+    # model2.to(device)
+    # model2.convert_to_fp16()
+    # model2.eval()
 
-    logger.log("sampling...")
-    model_kwargs = {}
-    if args.class_cond:
-        classes = th.tensor([i for i in range(args.num_classes)] * 4, dtype=th.long, device=device)
-        model_kwargs["y"] = classes
-    sample_fn = (
-        diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
-    )
-    sample = sample_fn(
-        model,
-        (args.batch_size, 3, args.image_size, args.image_size),
-        clip_denoised=args.clip_denoised,
-        model_kwargs=model_kwargs,
-        progress=True
-    )
-    # sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
-    # sample = sample.permute(0, 2, 3, 1)
-    # sample = sample.contiguous()
+    # logger.log("sampling...")
+    # model_kwargs = {}
+    # seed_everything(args.seed)
+    # if args.class_cond:
+    #     classes = th.tensor([i for i in range(args.num_classes)] * 4, dtype=th.long, device=device)
+    #     model_kwargs["y"] = classes
+    # sample_fn = (
+    #     diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
+    # )
+    # sample_fn = partial(custom_ddim_sample_loop, diffusion)
     
-    display_image_grid(sample, display=True, nrow=10, normalize=True, value_range=(-1, 1), factor=args.factor)
-
-    
-    classes = th.tensor([i for i in range(args.num_classes)], dtype=th.long, device=device)
-    model_kwargs["y"] = classes
-    sample_fn = (
-        diffusion.p_sample_loop_progressive if not args.use_ddim else diffusion.ddim_sample_loop_progressive
-    )
-    x0_preds_progressive = []
-    for i, sample in enumerate(
-        sample_fn(
-            model,
-            (args.num_classes, 3, args.image_size, args.image_size),
-            clip_denoised=args.clip_denoised,
-            model_kwargs=model_kwargs,
-            progress=True
-        )
-    ): 
-        # sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
-        # sample = sample.permute(0, 2, 3, 1)
-        # sample = sample.contiguous()
-        x0_preds_progressive.append(sample["pred_xstart"])
+    # for i in [-1]:
+    #     print(f"Sampling with switch at timestep {i}")
+    #     seed_everything(args.seed)
+    #     sample = sample_fn(
+    #         model,
+    #         model2,
+    #         (args.batch_size, 3, args.image_size, args.image_size),
+    #         clip_denoised=args.clip_denoised,
+    #         model_kwargs=model_kwargs,
+    #         progress=True,
+    #         switch_model_at=i
+    #     )
+    #     # sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
+    #     # sample = sample.permute(0, 2, 3, 1)
+    #     # sample = sample.contiguous()
         
-    x0_preds_progressive = th.stack(x0_preds_progressive, dim=0)
+    #     display_image_grid(sample, display=True, nrow=10, normalize=True, value_range=(-1, 1), factor=args.factor)
+        
+    # pbar = range(50000 // 1024)
+    # all_images = []
+    # all_labels = []
+    # pbar = tqdm(pbar, desc=f"Sampling {50000} images")
+    # for _ in pbar:
+    #     model_kwargs = {}
+    #     if args.class_cond:
+    #         classes = th.randint(
+    #             low=0, high=args.num_classes, size=(1024,), device="cuda"
+    #         )
+    #         model_kwargs["y"] = classes
+    #     sample = sample_fn(
+    #         model,
+    #         model2,
+    #         (1024, 3, args.image_size, args.image_size),
+    #         clip_denoised=args.clip_denoised,
+    #         model_kwargs=model_kwargs,
+    #         switch_model_at=args.switch_model_at,
+    #     )
+    #     sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
+    #     sample = sample.permute(0, 2, 3, 1)
+    #     sample = sample.contiguous()
+
+    #     all_images.extend([sample.cpu().numpy() for sample in [sample]])
+    #     if args.class_cond:
+    #         all_labels.extend([labels.cpu().numpy() for labels in [classes]])
     
-    # Select 10 evenly spaced timesteps, including first and last
-    indices = th.linspace(0, len(x0_preds_progressive) - 1, 10).long()
-    x0_preds_progressive = x0_preds_progressive[indices]
+    # arr = np.concatenate(all_images, axis=0)
+    # arr = arr[: 50000]
+    # if args.class_cond:
+    #     label_arr = np.concatenate(all_labels, axis=0)
+    #     label_arr = label_arr[: 50000]
+    # shape_str = "x".join([str(x) for x in arr.shape])
+    # # if os.environ.get("OPENAI_SAMPLESDIR") is not None:
+    # #     base_path = os.path.join(os.environ["OPENAI_SAMPLESDIR"])
+    # # else:
+    # #     base_path = os.path.join(logger.get_dir())
+    # base_path = f"/ceph/scratch/martorellat/guided_diffusion/extras/switch_model_at_{args.switch_model_at}"
+    # os.makedirs(base_path, exist_ok=True)
+    # out_path = os.path.join(base_path, f"samples_{shape_str}.npz")
+    # logger.log(f"saving to {out_path}")
+    # if args.class_cond:
+    #     np.savez(out_path, arr, label_arr)
     
-    x0_preds_progressive = rearrange(x0_preds_progressive, 't b c h w -> (b t) c h w')
+    # classes = th.tensor([i for i in range(args.num_classes)], dtype=th.long, device=device)
+    # model_kwargs["y"] = classes
+    # sample_fn = (
+    #     diffusion.p_sample_loop_progressive if not args.use_ddim else diffusion.ddim_sample_loop_progressive
+    # )
+    # x0_preds_progressive = []
+    # for i, sample in enumerate(
+    #     sample_fn(
+    #         model,
+    #         (args.num_classes, 3, args.image_size, args.image_size),
+    #         clip_denoised=args.clip_denoised,
+    #         model_kwargs=model_kwargs,
+    #         progress=True
+    #     )
+    # ): 
+    #     # sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
+    #     # sample = sample.permute(0, 2, 3, 1)
+    #     # sample = sample.contiguous()
+    #     x0_preds_progressive.append(sample["pred_xstart"])
+        
+    # x0_preds_progressive = th.stack(x0_preds_progressive, dim=0)
     
-    display_image_grid(x0_preds_progressive, display=True, nrow=10, normalize=True, value_range=(-1, 1), factor=args.factor)
+    # # Select 10 evenly spaced timesteps, including first and last
+    # indices = th.linspace(0, len(x0_preds_progressive) - 1, 10).long()
+    # x0_preds_progressive = x0_preds_progressive[indices]
+    
+    # x0_preds_progressive = rearrange(x0_preds_progressive, 't b c h w -> (b t) c h w')
+    
+    # display_image_grid(x0_preds_progressive, display=True, nrow=10, normalize=True, value_range=(-1, 1), factor=args.factor)
     
     
-    data = load_data(
-        data_dir=args.data_dir,
-        batch_size=5,
-        image_size=args.image_size,
-        class_cond=args.class_cond,
-        deterministic=True,
-    )
+    # data = load_data(
+    #     data_dir=args.data_dir,
+    #     batch_size=5,
+    #     image_size=args.image_size,
+    #     class_cond=args.class_cond,
+    #     deterministic=True,
+    # )
     
-    batch, cond = next(iter(data))
-    batch = batch.to(device)
+    # batch, cond = next(iter(data))
+    # batch = batch.to(device)
     
-    combined_im = timestamp_sample(
-        diffusion,
-        model,
-        batch,
-        model_kwargs=cond,
-        use_ddim=args.use_ddim,
-        num_timesteps=4,
-        device=device,
-        factor=args.factor,
-        exp_name=args.exp_name,
-    )
+    # combined_im = timestamp_sample(
+    #     diffusion,
+    #     model,
+    #     batch,
+    #     model_kwargs=cond,
+    #     use_ddim=args.use_ddim,
+    #     num_timesteps=4,
+    #     device=device,
+    #     factor=args.factor,
+    #     exp_name=args.exp_name,
+    # )
     
-    from IPython.display import display as ipy_display
-    ipy_display(combined_im)
+    # from IPython.display import display as ipy_display
+    # ipy_display(combined_im)
         
 
 
@@ -274,43 +398,49 @@ def main(args):
 # exp_name = "cifar10_cond_distributional_noweighting_lambda_linear"
 # exp_name = "cifar10_cond_distributional_noweighting_eps_pred"
 # exp_name = "cifar10_cond_distributional_noweighting_eps_pred"
-exp_name = "AAAFINAL2_distributional_lambda_dynamical_step"
+# exp_name = "AAAFINAL2_distributional_lambda_dynamical_step"
+exp_name = "FINAL3_curriculum_start_at_00percent"
+exp_name_2 = "FINAL_curriculum_baseline"
 checkpoint_iter = 300_000
 ema = True
 model = f"ema_0.9999_{checkpoint_iter}" if ema else f"model{checkpoint_iter}" 
 
-defaults = dict(
-    clip_denoised=False,
-    num_classes=10,
-    batch_size=10 * 4,
-    image_size=32,
-    num_channels=192,
-    num_res_blocks=3,
-    learn_sigma=True,
-    diffusion_steps=4000,
-    use_ddim=True,
-    timestep_respacing="ddim50",
-    class_cond="uncond" not in exp_name,
-    predict_xstart=False,
-    noise_schedule="cosine",
-    lr=5e-5,
-    distributional_num_eps_channels=1,
-    num_head_channels=64,
-    use_fp16=True,
-    model_path=f"/ceph/scratch/martorellat/guided_diffusion/improvements/blobs_{exp_name}/{model}.pt",
-    factor=4,  # Factor to resize the image for display
-    
-    use_distributional=True,
-    # distributional_lambda=0,
-    # distributional_track_terms_regardless_of_lambda=True,
-    # distributional_population_size=4,
-    # distributional_kernel_kwargs='{"beta": 2}',
-    data_dir="/nfs/ghome/live/martorellat/data/cifar_train",
-    exp_name=exp_name,
-    seed=10,
-)
-args = model_and_diffusion_defaults() | defaults
+for i in [0]:
+    defaults = dict(
+        clip_denoised=True,
+        num_classes=10,
+        batch_size=10 * 4,
+        image_size=32,
+        num_channels=192,
+        num_res_blocks=3,
+        learn_sigma=True,
+        diffusion_steps=4000,
+        use_ddim=True,
+        timestep_respacing="ddim10",
+        class_cond=True,
+        predict_xstart=False,
+        noise_schedule="cosine",
+        lr=5e-5,
+        distributional_num_eps_channels=1,
+        num_head_channels=32,
+        use_fp16=True,
+        model_path=f"/ceph/scratch/martorellat/guided_diffusion/curriculum/blobs_{exp_name}/{model}.pt",
+        model_path_2=f"/ceph/scratch/martorellat/guided_diffusion/curriculum/blobs_{exp_name_2}/{model}.pt",
+        factor=4,  # Factor to resize the image for display
+        
+        use_distributional=True,
+        use_same_noise_in_sampling=False,
+        # distributional_lambda=0,
+        # distributional_track_terms_regardless_of_lambda=True,
+        # distributional_population_size=4,
+        # distributional_kernel_kwargs='{"beta": 2}',
+        data_dir="/nfs/ghome/live/martorellat/data/cifar_train",
+        exp_name=exp_name,
+        seed=10,
+        switch_model_at=i,  # Timestep at which to switch models
+    )
+    args = model_and_diffusion_defaults() | defaults
 
-main(EasyDict(args))
+    main(EasyDict(args))
 
 # %%

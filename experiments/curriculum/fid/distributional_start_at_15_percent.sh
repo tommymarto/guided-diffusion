@@ -29,15 +29,15 @@ source $VENV_PATH/bin/activate
 set -o errexit
 
 EXPERIMENT_NAME="curriculum_start_at_15percent"
-CHECKPOINT_STEP="300000"
+CHECKPOINT_STEP="300001"
 
 echo "Checkpoint: $EXPERIMENT_NAME"
 echo "Checkpoint step: $CHECKPOINT_STEP"
 
-SAMPLING_STEPS=(5 10 20 30 50)
+SAMPLING_STEPS=(5 10 20 30 50 100)
 CFG_SCALES=(0.0)
-# SAMPLING_MODES=("DDIM" "iDDPM" "DDIM_diff_noise" "iDDPM_diff_noise")
-SAMPLING_MODES=("DDIM_diff_noise" "iDDPM_diff_noise")
+SAMPLING_MODES=("DDIM" "iDDPM" "DDIM_diff_noise" "iDDPM_diff_noise")
+# SAMPLING_MODES=("DDIM_diff_noise" "iDDPM_diff_noise")
 NUM_FID_SAMPLES=50000
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/curriculum/logs_$EXPERIMENT_NAME"
