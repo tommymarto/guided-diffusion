@@ -18,7 +18,7 @@ from .nn import mean_flat
 from .losses import normal_kl, discretized_gaussian_log_likelihood
 
 
-def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
+def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, s=0.008):
     """
     Get a pre-defined beta schedule for the given name.
 
@@ -39,7 +39,7 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
     elif schedule_name == "cosine":
         return betas_for_alpha_bar(
             num_diffusion_timesteps,
-            lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2,
+            lambda t: math.cos((t + s) / (1 + s) * math.pi / 2) ** 2,
         )
     else:
         raise NotImplementedError(f"unknown beta schedule: {schedule_name}")
@@ -104,6 +104,7 @@ class LossType(enum.Enum):
 class DispersionLossType(enum.Enum):
     NONE = enum.auto()  # no dispersion loss
     INTERACTION = enum.auto()  # interaction-based dispersion loss
+    INTERACTION_INVERSE = enum.auto()  # interaction-based dispersion loss with inverse weighting
     INTERACTION_WITHOUT_PIXEL_SPACE = enum.auto()  # interaction-based dispersion loss without pixel space
 
     def __str__(self):
@@ -185,6 +186,7 @@ class GaussianDiffusion:
         distributional_lambda_weighting="constant",
         distributional_beta_schedule="constant",
         distributional_population_size=4,
+        distributional_use_inverted_schedule=False,
         distributional_kernel_kwargs={"beta": 1.0},
         distributional_loss_weighting=LossWeighting("NO_WEIGHTING"),
         dispersion_loss_type=DispersionLossType.NONE,
@@ -207,6 +209,7 @@ class GaussianDiffusion:
         self.distributional_lambda_weighting = distributional_lambda_weighting
         self.distributional_beta_schedule = distributional_beta_schedule
         self.distributional_population_size = distributional_population_size
+        self.distributional_use_inverted_schedule = distributional_use_inverted_schedule
         self.distributional_kernel_kwargs = distributional_kernel_kwargs
         self.distributional_loss_weighting = distributional_loss_weighting
         self.distributional_num_eps_channels = distributional_num_eps_channels
@@ -260,6 +263,7 @@ class GaussianDiffusion:
             lambda_weighting_function=distributional_lambda_weighting,
             beta_schedule=distributional_beta_schedule,
             population_size=distributional_population_size,
+            use_inverted_schedule=distributional_use_inverted_schedule,
             kernel_kwargs=distributional_kernel_kwargs,
             track_terms_regardless_of_lambda=distributional_track_terms_regardless_of_lambda,
             num_timesteps=self.num_timesteps,
@@ -944,7 +948,11 @@ class GaussianDiffusion:
 
             if self.dispersion_loss_type is not DispersionLossType.NONE:
                 # Calculate the dispersion term.
-                if self.dispersion_loss_type in [DispersionLossType.INTERACTION, DispersionLossType.INTERACTION_WITHOUT_PIXEL_SPACE]:
+                if self.dispersion_loss_type in [
+                    DispersionLossType.INTERACTION,
+                    DispersionLossType.INTERACTION_INVERSE,
+                    DispersionLossType.INTERACTION_WITHOUT_PIXEL_SPACE
+                ]:
                     # first let's normalize the acts
                     acts_population = [a / th.norm(a, dim=1, keepdim=True) for a in acts_population]
                     acts = [rearrange(acts_population[i], "(n m) ... -> n m ...", m=m) for i in range(len(acts_population))]
@@ -956,7 +964,7 @@ class GaussianDiffusion:
                     else:
                         acts_interaction = th.stack(acts_interaction, dim=0)
                         acts_interaction = th.mean(acts_interaction, dim=0)
-                    terms["dispersion"] = -(self.dispersion_loss_weight * acts_interaction)
+                    terms["dispersion"] = self.dispersion_loss_weight * acts_interaction
 
             if self.model_var_type in [
                 ModelVarType.LEARNED,
@@ -1012,11 +1020,17 @@ class GaussianDiffusion:
                 terms["loss"] = -terms["score"]
 
             terms["loss"] = terms["loss"] + terms.get("vb", 0)
-            terms["loss"] = terms["loss"] + terms.get("dispersion", 0)
+            # we use minus here because it needs to be the opposite sign of the confinement
+            # basically loss = confinement - interaction - dispersion
+            if self.dispersion_loss_type == DispersionLossType.INTERACTION_INVERSE:
+                terms["loss"] = terms["loss"] + terms.get("dispersion", 0)
+            else:                
+                terms["loss"] = terms["loss"] - terms.get("dispersion", 0)
 
             # quick and dirty way to discard the interaction term in pixel space
             if self.dispersion_loss_type == DispersionLossType.INTERACTION_WITHOUT_PIXEL_SPACE:
-                terms["loss"] = -terms["confinement_term"] - terms["dispersion"]
+                # dispersion is already multiplied by 0.5 and we assume lambda 1
+                terms["loss"] = -(terms["dispersion"] - terms["confinement_term"])
 
         else:
             raise NotImplementedError(self.loss_type)

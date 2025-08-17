@@ -44,13 +44,16 @@ def diffusion_defaults():
         distributional_lambda_weighting="constant",
         distributional_beta_schedule="constant",
         distributional_population_size=4,
+        distributional_use_inverted_schedule=False,
         distributional_kernel_kwargs={"beta": 1.0},
         distributional_loss_weighting="no_weighting",  # can be "no_weighting" or "kingma_snr"
         distributional_num_eps_channels=1,
         dispersion_loss_type="none",
         dispersion_loss_weight=0.5,
         dispersion_loss_last_act_only=False,
-        use_same_noise_in_sampling=False
+        use_same_noise_in_sampling=False,
+
+        beta_schedule_s=0.008
     )
 
 
@@ -114,6 +117,7 @@ def create_model_and_diffusion(
     distributional_lambda_weighting,
     distributional_beta_schedule,
     distributional_population_size,
+    distributional_use_inverted_schedule,
     distributional_kernel_kwargs,
     distributional_loss_weighting,
     distributional_num_eps_channels,
@@ -121,7 +125,8 @@ def create_model_and_diffusion(
     dispersion_loss_weight,
     dispersion_loss_last_act_only,
     use_original_unet,
-    use_same_noise_in_sampling
+    use_same_noise_in_sampling,
+    beta_schedule_s
 ):
     model = create_model(
         image_size,
@@ -161,13 +166,15 @@ def create_model_and_diffusion(
         distributional_lambda_weighting=distributional_lambda_weighting,
         distributional_beta_schedule=distributional_beta_schedule,
         distributional_population_size=distributional_population_size,
+        distributional_use_inverted_schedule=distributional_use_inverted_schedule,
         distributional_kernel_kwargs=distributional_kernel_kwargs,
         distributional_loss_weighting=distributional_loss_weighting,
         distributional_num_eps_channels=distributional_num_eps_channels,
         dispersion_loss_type=dispersion_loss_type,
         dispersion_loss_weight=dispersion_loss_weight,
         dispersion_loss_last_act_only=dispersion_loss_last_act_only,
-        use_same_noise_in_sampling=use_same_noise_in_sampling
+        use_same_noise_in_sampling=use_same_noise_in_sampling,
+        beta_schedule_s=beta_schedule_s
     )
     return model, diffusion
 
@@ -260,15 +267,17 @@ def create_gaussian_diffusion(
     distributional_lambda_weighting="constant",
     distributional_beta_schedule="constant",
     distributional_population_size=4,
+    distributional_use_inverted_schedule=False,
     distributional_kernel_kwargs={"beta": 1.0},
     distributional_loss_weighting="no_weighting",
     distributional_num_eps_channels=1,
     dispersion_loss_type="none",
     dispersion_loss_weight=0.5,
     dispersion_loss_last_act_only=False,
-    use_same_noise_in_sampling=False
+    use_same_noise_in_sampling=False,
+    beta_schedule_s=0.008
 ):
-    betas = gd.get_named_beta_schedule(noise_schedule, steps)
+    betas = gd.get_named_beta_schedule(noise_schedule, steps, s=beta_schedule_s)
     if use_kl:
         loss_type = gd.LossType.RESCALED_KL
     elif rescale_learned_sigmas:
@@ -302,6 +311,7 @@ def create_gaussian_diffusion(
         distributional_lambda_weighting=distributional_lambda_weighting,
         distributional_beta_schedule=distributional_beta_schedule,
         distributional_population_size=distributional_population_size,
+        distributional_use_inverted_schedule=distributional_use_inverted_schedule,
         distributional_kernel_kwargs=distributional_kernel_kwargs,
         distributional_loss_weighting=gd.LossWeighting(distributional_loss_weighting.upper()),
         distributional_num_eps_channels=distributional_num_eps_channels,

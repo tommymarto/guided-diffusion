@@ -1,15 +1,16 @@
 #!/bin/bash
 #SBATCH --job-name=fid-evaluation
-#SBATCH --partition=a100,gpu_lowp  # Specify the partition name
+#SBATCH --partition=gpu_lowp  # Specify the partition name
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4         # Adjust based on your needs
-#SBATCH --gres=gpu:1               # Number of GPUs per node
+#SBATCH --gres=gpu:h100:1               # Number of GPUs per node
 #SBATCH --mem=24G                  # Adjust based on your needs
 #SBATCH --time=24:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
 #SBATCH --error=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.err
 #SBATCH --requeue
+#SBATCH --dependency=afterok:1231699
 
 module purge
 module load cuda/12.4
@@ -28,15 +29,15 @@ source $VENV_PATH/bin/activate
 # Exit on errors
 set -o errexit
 
-EXPERIMENT_NAME="BBB_distributional_lambda_beta_dynamical_sigmoid_shifted"
+EXPERIMENT_NAME="aaa_distributional_lambda_inverted_schedule_dynamical_cosine"
 CHECKPOINT_STEP="300000"
 
 echo "Checkpoint: $EXPERIMENT_NAME"
 echo "Checkpoint step: $CHECKPOINT_STEP"
 
-SAMPLING_STEPS=(5 10 20 30 50)
+SAMPLING_STEPS=(5 10 20 30 50 100 250)
 CFG_SCALES=(0.0)
-SAMPLING_MODES=("DDIM" "iDDPM" "DDIM_diff_noise" "iDDPM_diff_noise")
+SAMPLING_MODES=("DDIM_diff_noise" "iDDPM_diff_noise")
 NUM_FID_SAMPLES=50000
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/logs_$EXPERIMENT_NAME"

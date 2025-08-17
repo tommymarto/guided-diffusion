@@ -156,9 +156,9 @@ def load_dataset(
 					transforms.ToTensor(),
 				])(img)
 				all_data.append(img)
-				all_data.append(img_flipped)
+				# all_data.append(img_flipped)
 				all_labels.append(labels[i])
-				all_labels.append(labels[i])
+				# all_labels.append(labels[i])
 
 	all_data = torch.stack(all_data)
 	all_labels = torch.stack(all_labels)
@@ -385,7 +385,7 @@ def calculate_collapse_time_torch(data: torch.Tensor, t_range: np.ndarray, n_pri
     
 #     return t_sep.item()
 
-def _find_d_min_torch(data: torch.Tensor, batch_size: int = 256) -> float:
+def _find_d_min_torch(data: torch.Tensor, batch_size: int = 256, return_all_distances: bool = False):
     """
     Finds the minimum distance between any two distinct points in the dataset (d_min).
     This is a shared helper function.
@@ -393,16 +393,21 @@ def _find_d_min_torch(data: torch.Tensor, batch_size: int = 256) -> float:
     Args:
         data (torch.Tensor): The input dataset, shape (n_samples, d_features).
         batch_size (int): Batch size for memory-efficient distance calculation.
+        return_all_distances (bool): If True, returns (d_min, all_distances). If False, returns just d_min.
 
     Returns:
-        float: The minimum distance d_min.
+        float or tuple: If return_all_distances=False, returns the minimum distance d_min.
+                       If return_all_distances=True, returns (d_min, all_distances) where
+                       all_distances is a tensor of all minimum distances for each point.
     """
     n_samples = data.shape[0]
     data = data.to("cuda")  # Ensure data is on GPU
     device = data.device
-    min_distances = torch.full((n_samples,), float('inf'), device=device)
+    min_distances = torch.full((n_samples,), float('-inf'), device=device)
     
-    print("\nCalculating d_min (minimum distance between any two points)...")
+    print(f"\nCalculating d_min (minimum distance between any two points)...")
+    if return_all_distances:
+        print("  - Will return all distances for quantile calculation")
     start_time = time.time()
     
     num_batches = (n_samples + batch_size - 1) // batch_size
@@ -426,7 +431,10 @@ def _find_d_min_torch(data: torch.Tensor, batch_size: int = 256) -> float:
     print(f"  - d_min calculation finished in {end_time - start_time:.2f} seconds.")
     print(f"  - d_min = {d_min.item():.4f}")
     
-    return d_min.item()
+    if return_all_distances:
+        return d_min.item(), min_distances
+    else:
+        return d_min.item()
 
 # ==============================================================================
 # 2. UPDATED CALCULATION FUNCTIONS
@@ -440,7 +448,10 @@ def calculate_separation_time_torch(data: torch.Tensor, batch_size: int = 256) -
     print("\nCalculating Guaranteed Separation Time (t_sep)...")
     
     # --- Step 1: Find d_min using the shared helper ---
-    d_min = _find_d_min_torch(data, batch_size)
+    d_min, all_distances = _find_d_min_torch(data, batch_size, return_all_distances=True)
+	
+    # print quantiles of all_distances
+    print(f"  - All distances (quantiles): {torch.quantile(all_distances, torch.tensor([0.25, 0.5, 0.75]).to('cuda'), dim=0)}")
 
     # --- Step 2: Apply the analytical formula to solve for t_sep ---
     d_min_over_6_sq = (d_min / 6.0)**2
@@ -452,7 +463,7 @@ def calculate_separation_time_torch(data: torch.Tensor, batch_size: int = 256) -
     
     print(f"  - Calculated t_sep = {t_sep:.4f}")
     
-    return t_sep, d_min
+    return t_sep, d_min, all_distances
 
 def ambiguity_ratio(t_biroli: np.ndarray, d: float, eps: float = 1e-20) -> np.ndarray:
     """
@@ -504,7 +515,20 @@ n_samples_total, d_features = filtered_data.shape
 t_S_biroli = calculate_speciation_time_torch(filtered_data)
 
 #%%
-t_C_strict, d_min = calculate_separation_time_torch(filtered_data)
+t_C_strict, d_min, all_distances = calculate_separation_time_torch(filtered_data)
+
+#%%
+# Plotting all_distances against quantiles
+plt.figure(figsize=(10, 6))
+sorted_distances = torch.sort(all_distances)[0].cpu().numpy()
+quantiles = np.linspace(0, 1, len(sorted_distances))
+plt.plot(quantiles, sorted_distances)
+plt.xlabel("Quantile")
+plt.ylabel("Nearest Neighbor Distance")
+plt.title("Distribution of Nearest Neighbor Distances")
+plt.grid(True)
+plt.show()
+
 
 #%%
 
@@ -549,6 +573,385 @@ print(f"Ambiguity at t_C (t={t_C:.3f}): A(t) = {ambiguity_ratio(np.array([t_C]),
 print(f"Ambiguity at t_C strict (t={t_C_strict:.3f}): A(t) = {ambiguity_ratio(np.array([t_C_strict]), d=d_min)[0]:.4f}")
 print(f"Ambiguity at low t (t=0.01): A(t) = {ambiguity_ratio(np.array([0.01]), d=d_min)[0]:.4f} (should be close to 0)")
 
+# %%
+#%%
+# ==============================================================================
+# COMPREHENSIVE AMBIGUITY RATIO HEATMAP VISUALIZATION
+# ==============================================================================
+
+# # Define the parameter space for the heatmap
+# t_biroli_range = np.linspace(0.01, 2.5, 100)  # Time range
+# d_range = np.linspace(d_min * 0.5, d_min * 3.0, 100)  # Distance range around d_min
+
+# # Create meshgrid for the heatmap
+# T, D = np.meshgrid(t_biroli_range, d_range)
+# A = np.zeros_like(T)
+
+# # Calculate ambiguity ratio for each (t, d) combination
+# print("Calculating ambiguity ratio heatmap...")
+# for i in tqdm(range(len(d_range)), desc="Distance"):
+#     for j in range(len(t_biroli_range)):
+#         A[i, j] = ambiguity_ratio(np.array([T[i, j]]), d=D[i, j])[0]
+
+# # Create the main heatmap figure
+# fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+# # --- Subplot 1: Main Heatmap ---
+# ax1 = axes[0, 0]
+# im1 = ax1.contourf(T, D, A, levels=50, cmap='viridis')
+# cbar1 = plt.colorbar(im1, ax=ax1)
+# cbar1.set_label('Ambiguity Ratio A(t,d)', fontsize=12)
+
+# # Add contour lines for specific ambiguity levels
+# contours1 = ax1.contour(T, D, A, levels=[0.1, 0.3, 0.5, 0.7, 0.9], 
+#                         colors='white', linewidths=1.5, alpha=0.8)
+# ax1.clabel(contours1, inline=True, fontsize=10, fmt='%.1f')
+
+# # Mark the actual d_min and characteristic times
+# ax1.axhline(y=d_min, color='red', linestyle='--', linewidth=2, alpha=0.9, 
+#             label=f'd_min = {d_min:.3f}')
+# ax1.axvline(x=t_C_strict, color='orange', linestyle='--', linewidth=2, alpha=0.9,
+#             label=f't_sep = {t_C_strict:.3f}')
+
+# ax1.set_xlabel('Time t (Biroli Scale)', fontsize=12)
+# ax1.set_ylabel('Distance d', fontsize=12)
+# ax1.set_title('Ambiguity Ratio A(t,d) Heatmap', fontsize=14)
+# ax1.legend()
+# ax1.grid(True, alpha=0.3)
+
+# # --- Subplot 2: Cross-section at d_min ---
+# ax2 = axes[0, 1]
+# ambiguity_at_dmin = ambiguity_ratio(t_biroli_range, d=d_min)
+# ax2.plot(t_biroli_range, ambiguity_at_dmin, 'r-', linewidth=2, label=f'A(t, d_min) where d_min={d_min:.3f}')
+
+# # Add characteristic time markers
+# ax2.axvline(x=t_C_strict, color='orange', linestyle='--', linewidth=2, 
+#             label=f't_sep = {t_C_strict:.3f}')
+
+# # Add horizontal reference lines
+# ax2.axhline(y=0.5, color='gray', linestyle=':', alpha=0.7, label='A(t) = 0.5')
+# ax2.axhline(y=0.1, color='gray', linestyle=':', alpha=0.7, label='A(t) = 0.1')
+
+# ax2.set_xlabel('Time t (Biroli Scale)', fontsize=12)
+# ax2.set_ylabel('Ambiguity Ratio A(t)', fontsize=12)
+# ax2.set_title('Cross-section: A(t) at d_min', fontsize=14)
+# ax2.legend()
+# ax2.grid(True, alpha=0.3)
+
+# # --- Subplot 3: Cross-section at t_sep ---
+# ax3 = axes[1, 0]
+# ambiguity_at_tsep = ambiguity_ratio(np.array([t_C_strict]), d=d_range)
+# ax3.plot(d_range, ambiguity_at_tsep, 'g-', linewidth=2, label=f'A(t_sep, d) where t_sep={t_C_strict:.3f}')
+
+# # Add d_min marker
+# ax3.axvline(x=d_min, color='red', linestyle='--', linewidth=2, label=f'd_min = {d_min:.3f}')
+
+# # Add quantile markers
+# quantiles_to_mark = [0.25, 0.5, 0.75, 0.9]
+# quantile_distances = torch.quantile(all_distances, torch.tensor(quantiles_to_mark).to('cuda'), dim=0).cpu().numpy()
+# colors_q = plt.cm.plasma(np.linspace(0, 1, len(quantiles_to_mark)))
+
+# for i, (q, d_q, color) in enumerate(zip(quantiles_to_mark, quantile_distances, colors_q)):
+#     if d_q <= d_range.max() and d_q >= d_range.min():
+#         ax3.axvline(x=d_q, color=color, linestyle=':', alpha=0.8, label=f'Q{q:.2f} = {d_q:.3f}')
+
+# ax3.set_xlabel('Distance d', fontsize=12)
+# ax3.set_ylabel('Ambiguity Ratio A(d)', fontsize=12)
+# ax3.set_title('Cross-section: A(d) at t_sep', fontsize=14)
+# ax3.legend()
+# ax3.grid(True, alpha=0.3)
+
+# # --- Subplot 4: Log-scale version for better detail ---
+# ax4 = axes[1, 1]
+# im4 = ax4.contourf(T, D, np.log10(A + 1e-10), levels=50, cmap='plasma')
+# cbar4 = plt.colorbar(im4, ax=ax4)
+# cbar4.set_label('log₁₀(Ambiguity Ratio)', fontsize=12)
+
+# # Add contour lines for specific log ambiguity levels
+# log_levels = np.log10([0.01, 0.1, 0.5])
+# contours4 = ax4.contour(T, D, np.log10(A + 1e-10), levels=log_levels, 
+#                         colors='white', linewidths=1.5, alpha=0.8)
+# ax4.clabel(contours4, inline=True, fontsize=10, fmt='%.2f')
+
+# # Mark the actual d_min and characteristic times
+# ax4.axhline(y=d_min, color='red', linestyle='--', linewidth=2, alpha=0.9, label=f'd_min = {d_min:.3f}')
+# ax4.axvline(x=t_C_strict, color='orange', linestyle='--', linewidth=2, alpha=0.9, label=f't_sep = {t_C_strict:.3f}')
+
+# ax4.set_xlabel('Time t (Biroli Scale)', fontsize=12)
+# ax4.set_ylabel('Distance d', fontsize=12)
+# ax4.set_title('Log₁₀(Ambiguity Ratio) for Better Detail', fontsize=14)
+# ax4.legend()
+# ax4.grid(True, alpha=0.3)
+
+# plt.tight_layout()
+# plt.savefig(f"../outputs/{dataset_name}_ambiguity_ratio_comprehensive_heatmap.png", 
+#             dpi=300, bbox_inches='tight')
+# plt.show()
+
+#%%
+# ==============================================================================
+# INTERACTIVE-STYLE HEATMAP WITH DISTANCE QUANTILES
+# ==============================================================================
+
+# # Calculate quantiles for better distance range
+# quantiles_fine = np.linspace(0.01, 0.99, 50)
+# distances_fine = torch.quantile(all_distances, torch.tensor(quantiles_fine).to(torch.float32).to("cuda"), dim=0).cpu().numpy()
+
+# # Create meshgrid using quantiles instead of absolute distances
+# T_fine, Q = np.meshgrid(t_biroli_range, quantiles_fine)
+# A_fine = np.zeros_like(T_fine)
+
+# print("Calculating fine-grained ambiguity ratio heatmap...")
+# for i in tqdm(range(len(quantiles_fine)), desc="Quantiles"):
+#     d = distances_fine[i]
+#     for j in range(len(t_biroli_range)):
+#         A_fine[i, j] = ambiguity_ratio(np.array([T_fine[i, j]]), d=d)[0]
+
+# # Create the quantile-based heatmap
+# plt.figure(figsize=(14, 10))
+
+# # Main heatmap
+# im = plt.contourf(T_fine, Q, A_fine, levels=50, cmap='viridis')
+# cbar = plt.colorbar(im)
+# cbar.set_label('Ambiguity Ratio A(t,d)', fontsize=14)
+
+# # Add contour lines
+# contours = plt.contour(T_fine, Q, A_fine, levels=[0.01, 0.05, 0.1, 0.3, 0.5, 0.7, 0.9], 
+#                       colors='white', linewidths=1.2, alpha=0.8)
+# plt.clabel(contours, inline=True, fontsize=10, fmt='%.2f')
+
+# # Add characteristic time line
+# plt.axvline(x=t_C_strict, color='red', linestyle='--', linewidth=3, alpha=0.9,
+#             label=f't_sep = {t_C_strict:.3f}')
+
+# # Mark special quantiles
+# special_quantiles = [0.01, 0.25, 0.5, 0.75, 0.95]
+# for sq in special_quantiles:
+#     plt.axhline(y=sq, color='yellow', linestyle=':', alpha=0.6, linewidth=1)
+#     plt.text(0.02, sq + 0.01, f'Q{sq:.2f}', color='yellow', fontweight='bold')
+
+# plt.xlabel('Time t (Biroli Scale)', fontsize=14)
+# plt.ylabel('Distance Quantile', fontsize=14)
+# plt.title(f'Ambiguity Ratio A(t,d) vs Time and Distance Quantile\n({dataset_name})', fontsize=16)
+# plt.legend()
+# plt.grid(True, alpha=0.3)
+
+# # Add text annotations for interpretation
+# plt.text(0.1, 0.95, 'High Ambiguity\n(Close neighbors)', 
+#          bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
+#          fontsize=10, ha='left')
+# plt.text(2.0, 0.05, 'Low Ambiguity\n(Distant neighbors)', 
+#          bbox=dict(boxstyle="round,pad=0.3", facecolor="blue", alpha=0.7),
+#          fontsize=10, ha='center', color='white')
+
+# plt.tight_layout()
+# plt.savefig(f"../outputs/{dataset_name}_ambiguity_quantile_heatmap.png", 
+#             dpi=300, bbox_inches='tight')
+# plt.show()
+
+#%%
+# ==============================================================================
+# COMPREHENSIVE AMBIGUITY RATIO HEATMAP VISUALIZATION - VERSION 2
+# ==============================================================================
+
+# Calculate quantiles for better distance range (same as the interactive plot)
+quantiles_fine = np.linspace(0, 1, 1000)
+distances_fine = torch.quantile(all_distances, torch.tensor(quantiles_fine).to(torch.float32).to("cuda"), dim=0).cpu().numpy()
+
+# Define the parameter space for the heatmap
+t_biroli_range = np.linspace(0.01, 2.5, 100)  # Time range
+d_range = np.linspace(d_min * 0.5, d_min * 3.0, 100)  # Distance range around d_min (for subplots 2 and 3)
+
+t_C_strict = -0.5 * np.log(1 - (d_min / (2 * 2.5))**2) # From our formula
+d_min_ambiguity = ambiguity_ratio(t_C_strict, d=d_min)
+
+# Create meshgrid for quantile-based heatmap (subplots 1 and 4)
+T_quantile, Q = np.meshgrid(t_biroli_range, quantiles_fine)
+A_quantile = np.zeros_like(T_quantile)
+
+# Create meshgrid for absolute distance heatmap (subplots 2 and 3)
+T, D = np.meshgrid(t_biroli_range, d_range)
+A = np.zeros_like(T)
+
+# Calculate ambiguity ratio for quantile-based heatmap
+print("Calculating quantile-based ambiguity ratio heatmap...")
+for i in tqdm(range(len(quantiles_fine)), desc="Quantiles"):
+    d = distances_fine[i]
+    for j in range(len(t_biroli_range)):
+        A_quantile[i, j] = ambiguity_ratio(np.array([T_quantile[i, j]]), d=d)[0]
+
+# Calculate ambiguity ratio for absolute distance heatmap
+print("Calculating absolute distance ambiguity ratio heatmap...")
+for i in tqdm(range(len(d_range)), desc="Distance"):
+    for j in range(len(t_biroli_range)):
+        A[i, j] = ambiguity_ratio(np.array([T[i, j]]), d=D[i, j])[0]
+
+# Create the main heatmap figure
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+# --- Subplot 1: Quantile-based Heatmap ---
+ax1 = axes[0, 0]
+im1 = ax1.contourf(T_quantile, Q, A_quantile, levels=50, cmap='plasma')
+cbar1 = plt.colorbar(im1, ax=ax1)
+cbar1.set_label('Ambiguity Ratio A(t,d)', fontsize=12)
+
+# Add contour lines for specific ambiguity levels
+contours1 = ax1.contour(T_quantile, Q, A_quantile, levels=[d_min_ambiguity, 0.1, 0.3, 0.5, 0.7, 0.9], colors='white', linewidths=1.5, alpha=0.8)
+ax1.clabel(contours1, inline=True, fontsize=10, fmt='%.1f')
+
+# Mark the actual d_min quantile and characteristic times
+d_min_quantile = torch.sum(all_distances <= d_min).float() / len(all_distances)
+# ax1.axhline(y=d_min_quantile.cpu().numpy(), color='red', linestyle='--', linewidth=2, alpha=0.9, label=f'd_min quantile = {d_min_quantile:.3f}')
+ax1.axvline(x=t_C_strict, color='orange', linestyle='--', linewidth=2, alpha=0.9,label=f't_sep = {t_C_strict:.3f}')
+
+# Mark special quantiles
+special_quantiles = [0.01, 0.25, 0.5, 0.75, 0.95]
+# for sq in special_quantiles:
+#     ax1.axhline(y=sq, color='yellow', linestyle=':', alpha=0.6, linewidth=1)
+
+ax1.set_xlabel('Time t (Biroli Scale)', fontsize=12)
+ax1.set_ylabel('Distance Quantile', fontsize=12)
+ax1.set_title('Ambiguity Ratio A(t,d) vs Distance Quantile', fontsize=14)
+ax1.legend()
+ax1.grid(True, alpha=0.3)
+
+# --- Subplot 2: Cross-section at d_min ---
+ax2 = axes[0, 1]
+ambiguity_at_dmin = ambiguity_ratio(t_biroli_range, d=d_min)
+ax2.plot(t_biroli_range, ambiguity_at_dmin, 'r-', linewidth=2, label=f'A(t, d_min) where d_min={d_min:.3f}')
+
+# Add characteristic time markers
+ax2.axvline(x=t_C_strict, color='orange', linestyle='--', linewidth=2, label=f't_sep = {t_C_strict:.3f}')
+
+# Add horizontal reference lines
+ax2.axhline(y=0.5, color='gray', linestyle=':', alpha=0.7, label='A(t) = 0.5')
+ax2.axhline(y=0.1, color='gray', linestyle=':', alpha=0.7, label='A(t) = 0.1')
+
+ax2.set_xlabel('Time t (Biroli Scale)', fontsize=12)
+ax2.set_ylabel('Ambiguity Ratio A(t)', fontsize=12)
+ax2.set_title('Cross-section: A(t) at d_min', fontsize=14)
+ax2.legend()
+ax2.grid(True, alpha=0.3)
+
+# --- Subplot 3: Cross-section at t_sep ---
+ax3 = axes[1, 0]
+ambiguity_at_tsep = ambiguity_ratio(np.array([t_C_strict]), d=d_range)
+ax3.plot(d_range, ambiguity_at_tsep, 'g-', linewidth=2, label=f'A(t_sep, d) where t_sep={t_C_strict:.3f}')
+
+# Add d_min marker
+ax3.axvline(x=d_min, color='red', linestyle='--', linewidth=2, label=f'd_min = {d_min:.3f}')
+
+# Add quantile markers
+quantiles_to_mark = [0.25, 0.5, 0.75, 0.9]
+quantile_distances = torch.quantile(all_distances, torch.tensor(quantiles_to_mark).to('cuda'), dim=0).cpu().numpy()
+colors_q = plt.cm.plasma(np.linspace(0, 1, len(quantiles_to_mark)))
+
+for i, (q, d_q, color) in enumerate(zip(quantiles_to_mark, quantile_distances, colors_q)):
+    if d_q <= d_range.max() and d_q >= d_range.min():
+        ax3.axvline(x=d_q, color=color, linestyle=':', alpha=0.8, label=f'Q{q:.2f} = {d_q:.3f}')
+
+ax3.set_xlabel('Distance d', fontsize=12)
+ax3.set_ylabel('Ambiguity Ratio A(d)', fontsize=12)
+ax3.set_title('Cross-section: A(d) at t_sep', fontsize=14)
+ax3.legend()
+ax3.grid(True, alpha=0.3)
+
+# --- Subplot 4: Quantile-based Log-scale version for better detail ---
+ax4 = axes[1, 1]
+im4 = ax4.contourf(T_quantile, Q, np.log10(A_quantile + 1e-10), levels=50, cmap='viridis')
+cbar4 = plt.colorbar(im4, ax=ax4)
+cbar4.set_label('log₁₀(Ambiguity Ratio)', fontsize=12)
+
+# Add contour lines for specific log ambiguity levels
+log_levels = np.log10([d_min_ambiguity, 0.01, 0.1, 0.5])
+contours4 = ax4.contour(T_quantile, Q, np.log10(A_quantile + 1e-10), levels=log_levels, colors='black', linewidths=1.5, alpha=0.8)
+ax4.clabel(contours4, inline=True, fontsize=10, fmt='%.2f')
+
+# Mark the actual d_min quantile and characteristic times
+# ax4.axhline(y=d_min_quantile, color='red', linestyle='--', linewidth=2, alpha=0.9, label=f'd_min quantile = {d_min_quantile:.3f}')
+ax4.axvline(x=t_C_strict, color='orange', linestyle='--', linewidth=2, alpha=0.9, label=f't_sep = {t_C_strict:.3f}')
+
+# Mark special quantiles
+for sq in special_quantiles:
+    ax4.axhline(y=sq, color='yellow', linestyle=':', alpha=0.6, linewidth=1)
+
+ax4.set_xlabel('Time t (Biroli Scale)', fontsize=12)
+ax4.set_ylabel('Distance Quantile', fontsize=12)
+ax4.set_title('Log₁₀(Ambiguity Ratio) vs Distance Quantile', fontsize=14)
+ax4.legend()
+ax4.grid(True, alpha=0.3)
+
+plt.tight_layout()
+# plt.savefig(f"../outputs/{dataset_name}_ambiguity_ratio_comprehensive_heatmap.png", 
+#             dpi=300, bbox_inches='tight')
+plt.show()
+
+#%%
+# ==============================================================================
+# CORRECTED CRITICAL TIME ANALYSIS
+# ==============================================================================
+
+# For each distance quantile, find the time where ambiguity drops below thresholds
+thresholds = [0.01, 0.05, 0.1, 0.3, 0.5]
+thresholds = np.linspace(0, 1, 1000)
+critical_times_matrix = np.full((len(quantiles_fine), len(thresholds)), np.nan)
+
+print("Calculating critical times for each quantile and threshold...")
+for i, d in enumerate(tqdm(distances_fine, desc="Distances")):
+    # Ensure d is a positive float, not a tensor or array element
+    d_val = float(d)
+    if d_val <= 0: continue
+    
+    ambiguity_schedule = ambiguity_ratio(t_biroli_range, d=d_val)
+    
+    for j, threshold in enumerate(thresholds):
+        # CORRECTED LOGIC: Find all indices where ambiguity is below the threshold
+        below_indices = np.where(ambiguity_schedule < threshold)[0]
+        
+        if len(below_indices) > 0:
+            # The critical time is the LATEST time that satisfies the condition.
+            last_below_idx = below_indices[-1]
+            critical_times_matrix[i, j] = t_biroli_range[last_below_idx]
+        # If it's never below the threshold, the value remains NaN, which is correct.
+
+# Create the critical times visualization
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 7))
+
+# Heatmap of critical times
+im = ax1.imshow(
+    critical_times_matrix, 
+    aspect='auto', 
+    cmap='plasma', 
+    origin='lower', # Set origin to lower-left for standard plot orientation
+    extent=[thresholds[0], thresholds[-1], quantiles_fine[0], quantiles_fine[-1]]
+)
+cbar = fig.colorbar(im, ax=ax1)
+cbar.set_label('Critical Time t (Biroli Scale)', fontsize=12)
+ax1.set_xlabel('Ambiguity Threshold A(t)', fontsize=12)
+ax1.set_ylabel('Distance Quantile', fontsize=12)
+ax1.set_title('Critical Times: When A(t,d) drops below threshold', fontsize=14)
+
+
+thresholds = [0.01, 0.05, 0.1, 0.3, 0.5]
+# Line plot showing how critical time varies with quantile for each threshold
+for j, threshold in enumerate(thresholds):
+    valid_times = critical_times_matrix[:, j]
+    valid_mask = ~np.isnan(valid_times)
+    if np.any(valid_mask):
+        ax2.plot(quantiles_fine[valid_mask], valid_times[valid_mask], 
+                 'o-', label=f'A(t) < {threshold}', alpha=0.8, markersize=4)
+
+ax2.axhline(y=t_C_strict, color='red', linestyle='--', linewidth=2, alpha=0.9,
+            label=f't_sep = {t_C_strict:.3f}')
+
+ax2.set_xlabel('Distance Quantile', fontsize=12)
+ax2.set_ylabel('Critical Time t (Biroli Scale)', fontsize=12)
+ax2.set_title('Critical Time vs Distance Quantile', fontsize=14)
+ax2.legend()
+ax2.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
 
 # %%
 # --- Run Calculations (Collapse) ---
@@ -803,6 +1206,7 @@ plt.ylabel("log(SNR)")
 plt.title(f"Mapping Biroli Times to Your Cosine Noise Schedule - {dataset_name}")
 plt.legend()
 plt.grid(True, alpha=0.3)
+plt.savefig(f"../outputs/{dataset_name}_time_matching_dynamical.png")
 plt.show()
 
 # %%
@@ -1030,6 +1434,14 @@ t_S_your_one_channel = convert_biroli_to_custom_cosine(t_S_one_channel, custom_s
 print("\n" + "-" * 60)
 print("Converting Collapse Time (t_C):")
 t_C_your = convert_biroli_to_custom_cosine(t_C, custom_schedule)
+
+print("\n" + "-" * 60)
+print("Converting Separation Time (t_C_strict):")
+t_C_strict_your = convert_biroli_to_custom_cosine(t_C_strict, custom_schedule)
+
+print("\n" + "-" * 60)
+print("Converting Separation Time (t_C_stricter):")
+t_C_stricter_your = convert_biroli_to_custom_cosine(t_C_stricter, custom_schedule)
 
 print("\n" + "=" * 70)
 print("                       SUMMARY OF RESULTS")
@@ -1276,4 +1688,3 @@ n_samples_total = [x[4] for x in results]
 schedule = CosineSchedule()
 # %%
 convert_biroli_to_custom_cosine(all_t_C.mean(), schedule), convert_biroli_to_custom_cosine(all_t_S.mean(), schedule), convert_biroli_to_custom_cosine(all_t_S_one_channel.mean(), schedule)
-# %%

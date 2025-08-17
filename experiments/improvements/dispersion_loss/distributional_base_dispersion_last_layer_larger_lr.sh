@@ -1,10 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=dnwfb___
+#SBATCH --job-name=dispersion
 #SBATCH --partition=gpu_lowp  # Specify the partition name
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=6
-#SBATCH --cpus-per-task=6
-#SBATCH --gres=gpu:h100:6               # Number of GPUs per node
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:h100:1               # Number of GPUs per node
 #SBATCH --mem=48G                  # Adjust based on your needs
 #SBATCH --time=48:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
@@ -46,7 +45,7 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="BBB_distributional_lambda_beta_dynamical_sigmoid_shifted"
+export EXPERIMENT_NAME="distributional_base_dispersion_last_layer_larger_lr"
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/blobs_$EXPERIMENT_NAME"
@@ -68,7 +67,7 @@ if [ "$LOCAL_MODE" = true ]; then
         --num_res_blocks 3 \
         --class_cond True \
         --learn_sigma True \
-        --lr 5e-5 \
+        --lr 1e-4 \
         --batch_size 128 \
         --dropout 0.3 \
         --diffusion_steps 4000 \
@@ -76,10 +75,10 @@ if [ "$LOCAL_MODE" = true ]; then
         --use_distributional True \
         --distributional_loss_weighting NO_WEIGHTING \
         --distributional_population_size $POPULATION_SIZE \
-        --distributional_lambda_weighting dynamical_sigmoid_shifted \
-        --distributional_beta_schedule dynamical_sigmoid_shifted \
-        --distributional_kernel_kwargs '{"beta_end": 2.0, "beta_start": 1}' \
         --distributional_num_eps_channels 1 \
+        --dispersion_loss_type INTERACTION \
+        --dispersion_loss_last_act_only True \
+        --dispersion_loss_weight 0.5 \
         --num_head_channels 32 \
         --use_fp16 True
 
@@ -94,7 +93,7 @@ else
             --num_res_blocks 3 \
             --class_cond True \
             --learn_sigma True \
-            --lr 5e-5 \
+            --lr 1e-4 \
             --batch_size $((128 / $SLURM_GPUS_ON_NODE)) \
             --dropout 0.3 \
             --diffusion_steps 4000 \
@@ -102,10 +101,10 @@ else
             --use_distributional True \
             --distributional_loss_weighting NO_WEIGHTING \
             --distributional_population_size $POPULATION_SIZE \
-            --distributional_lambda_weighting dynamical_sigmoid_shifted \
-            --distributional_beta_schedule dynamical_sigmoid_shifted \
-            --distributional_kernel_kwargs '{"beta_end": 2.0, "beta_start": 1}' \
             --distributional_num_eps_channels 1 \
+            --dispersion_loss_type INTERACTION \
+            --dispersion_loss_last_act_only True \
+            --dispersion_loss_weight 0.5 \
             --num_head_channels 32 \
             --use_fp16 True
 

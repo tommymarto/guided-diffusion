@@ -178,8 +178,9 @@ class GeneralizedKernelScore(nn.Module):
             )
         self.interaction_kwargs = self.kernel_kwargs["interaction_term"] if "interaction_term" in self.kernel_kwargs else self.kernel_kwargs
         self.confinement_kwargs = self.kernel_kwargs["confinement_term"] if "confinement_term" in self.kernel_kwargs else self.kernel_kwargs
-
-        if not isinstance(beta_schedule, ConstantScheduleNormalized):
+        
+        if not isinstance(beta_schedule, ConstantScheduleNormalized) and \
+            (isinstance(beta_schedule, InvertedSchedule) and not isinstance(beta_schedule.schedule, ConstantScheduleNormalized)):
             assert (
                 "beta_start" in self.interaction_kwargs
                 and "beta_end" in self.interaction_kwargs
@@ -354,6 +355,20 @@ class LambdaSchedule(abc.ABC):
         """
         pass
 
+class InvertedSchedule(LambdaSchedule):
+    """
+    Takes a schedule and inverts it
+    """
+
+    def __init__(self, schedule: LambdaSchedule):
+        super().__init__(schedule.num_timesteps)
+        self.schedule = schedule
+        if hasattr(schedule, "regimes"):
+            self.schedule.regimes = [1 - x for x in self.schedule.regimes[::-1]]
+
+    def __call__(self, t):
+        return 1 - self.schedule(t)
+
 class CosineScheduleNormalized(LambdaSchedule):
     def __init__(self, num_timesteps: int, logsnr_min=-15, logsnr_max=15):
         super().__init__(num_timesteps)
@@ -387,7 +402,7 @@ class SigmoidScheduleNormalized(LambdaSchedule):
         return 1 - weight
 
 
-def SigmoidScheduleShiftedNormalized(num_timesteps: int, b=-1):
+def SigmoidScheduleShiftedNormalized(num_timesteps: int, b=-2):
     return SigmoidScheduleNormalized(num_timesteps=num_timesteps, b=b)
 
 
@@ -418,7 +433,7 @@ class StepScheduleNormalized(LambdaSchedule):
 class DynamicalRegimesScheduleNormalized(LambdaSchedule):
     """Dynamical regimes schedule normalized to [0, 1]."""
 
-    def __init__(self, num_timesteps: int, interpolation: LambdaSchedule, regimes=(0.1032, 0.9135)):
+    def __init__(self, num_timesteps: int, interpolation: LambdaSchedule, regimes=(0.2978, 0.9135)):
         super().__init__(num_timesteps)
         self.regimes = regimes
         self.interpolation = interpolation
@@ -470,6 +485,22 @@ def DynamicalRegimesScheduleNormalizedWithLinearInterpolation(num_timesteps: int
     return DynamicalRegimesScheduleNormalized(
         num_timesteps=num_timesteps,
         interpolation=LinearScheduleNormalized(num_timesteps=num_timesteps),
+        regimes=(0.2978, 0.9135)
+    )
+    
+def DynamicalRegimesScheduleNormalizedWithLinearInterpolationWorstCase(num_timesteps: int):
+    """
+    Factory function to create a DynamicalRegimesScheduleNormalized with linear interpolation.
+    
+    Args:
+        num_timesteps (int): Number of timesteps for the schedule.
+        
+    Returns:
+        DynamicalRegimesScheduleNormalized: An instance of DynamicalRegimesScheduleNormalized with linear interpolation.
+    """
+    return DynamicalRegimesScheduleNormalized(
+        num_timesteps=num_timesteps,
+        interpolation=LinearScheduleNormalized(num_timesteps=num_timesteps),
         regimes=(0.1032, 0.9135)
     )
     
@@ -486,7 +517,7 @@ def DynamicalRegimesScheduleNormalizedWithCosineInterpolation(num_timesteps: int
     return DynamicalRegimesScheduleNormalized(
         num_timesteps=num_timesteps,
         interpolation=CosineScheduleNormalized(num_timesteps=num_timesteps),
-        regimes=(0.1032, 0.9135)
+        regimes=(0.2978, 0.9135)
     )
     
 def DynamicalRegimesScheduleNormalizedWithSigmoidInterpolation(num_timesteps: int):
@@ -502,7 +533,7 @@ def DynamicalRegimesScheduleNormalizedWithSigmoidInterpolation(num_timesteps: in
     return DynamicalRegimesScheduleNormalized(
         num_timesteps=num_timesteps,
         interpolation=SigmoidScheduleNormalized(num_timesteps=num_timesteps),
-        regimes=(0.1032, 0.9135)
+        regimes=(0.2978, 0.9135)
     )
     
 def DynamicalRegimesScheduleNormalizedWithSigmoidShiftedInterpolation(num_timesteps: int):
@@ -518,7 +549,39 @@ def DynamicalRegimesScheduleNormalizedWithSigmoidShiftedInterpolation(num_timest
     return DynamicalRegimesScheduleNormalized(
         num_timesteps=num_timesteps,
         interpolation=SigmoidScheduleShiftedNormalized(num_timesteps=num_timesteps),
-        regimes=(0.1032, 0.9135)
+        regimes=(0.2978, 0.9135)
+    )
+    
+def DynamicalRegimesScheduleNormalizedWithSigmoidTrueInterpolation(num_timesteps: int):
+    """
+    Factory function to create a DynamicalRegimesScheduleNormalized with shifted sigmoid interpolation.
+    
+    Args:
+        num_timesteps (int): Number of timesteps for the schedule.
+        
+    Returns:
+        DynamicalRegimesScheduleNormalized: An instance of DynamicalRegimesScheduleNormalized with shifted sigmoid interpolation.
+    """
+    return DynamicalRegimesScheduleNormalized(
+        num_timesteps=num_timesteps,
+        interpolation=SigmoidScheduleNormalized(num_timesteps=num_timesteps),
+        regimes=(0.2, 0.8)
+    )
+    
+def DynamicalRegimesScheduleNormalizedWithSigmoidAAAInterpolation(num_timesteps: int):
+    """
+    Factory function to create a DynamicalRegimesScheduleNormalized with shifted sigmoid interpolation.
+    
+    Args:
+        num_timesteps (int): Number of timesteps for the schedule.
+        
+    Returns:
+        DynamicalRegimesScheduleNormalized: An instance of DynamicalRegimesScheduleNormalized with shifted sigmoid interpolation.
+    """
+    return DynamicalRegimesScheduleNormalized(
+        num_timesteps=num_timesteps,
+        interpolation=SigmoidScheduleNormalized(num_timesteps=num_timesteps),
+        regimes=(0.5, 1)
     )
     
 def DynamicalRegimesScheduleNormalizedWithStepInterpolation(num_timesteps: int):
@@ -534,7 +597,7 @@ def DynamicalRegimesScheduleNormalizedWithStepInterpolation(num_timesteps: int):
     return DynamicalRegimesScheduleNormalized(
         num_timesteps=num_timesteps,
         interpolation=StepScheduleNormalized(num_timesteps=num_timesteps),
-        regimes=(0.1032, 0.9135)
+        regimes=(0.2978, 0.9135)
     )
 
 
@@ -545,6 +608,7 @@ def create_generalized_kernel_score(
     lambda_weighting_function: str,
     beta_schedule: str,
     population_size: int,
+    use_inverted_schedule: bool,
     kernel_kwargs: dict,
     track_terms_regardless_of_lambda: bool,
     num_timesteps: int,
@@ -587,6 +651,8 @@ def create_generalized_kernel_score(
         "dynamical_linear": DynamicalRegimesScheduleNormalizedWithLinearInterpolation(num_timesteps=num_timesteps),
         "dynamical_cosine": DynamicalRegimesScheduleNormalizedWithCosineInterpolation(num_timesteps=num_timesteps),
         "dynamical_sigmoid": DynamicalRegimesScheduleNormalizedWithSigmoidInterpolation(num_timesteps=num_timesteps),
+        "dynamical_sigmoid_true": DynamicalRegimesScheduleNormalizedWithSigmoidTrueInterpolation(num_timesteps=num_timesteps),
+        "dynamical_sigmoid_aaa": DynamicalRegimesScheduleNormalizedWithSigmoidAAAInterpolation(num_timesteps=num_timesteps),
         "dynamical_sigmoid_shifted": DynamicalRegimesScheduleNormalizedWithSigmoidShiftedInterpolation(num_timesteps=num_timesteps),
         "dynamical_step": DynamicalRegimesScheduleNormalizedWithStepInterpolation(num_timesteps=num_timesteps),
     }
@@ -607,6 +673,13 @@ def create_generalized_kernel_score(
     kernel_fn = kernel_function_map[kernel_function]
     lambda_weighting_fn = lambda_weighting_map[lambda_weighting_function]
     beta_schedule_fn = lambda_weighting_map[beta_schedule]
+    
+    if use_inverted_schedule:
+        logger.info(
+            "Using inverted schedules for lambda weighting and beta schedule."
+        )
+        lambda_weighting_fn = InvertedSchedule(lambda_weighting_fn)
+        beta_schedule_fn = InvertedSchedule(beta_schedule_fn)
 
     return GeneralizedKernelScore(
         kernel_function=kernel_fn,

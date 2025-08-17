@@ -34,7 +34,8 @@ CHECKPOINT_STEP="300000"
 echo "Checkpoint: $EXPERIMENT_NAME"
 echo "Checkpoint step: $CHECKPOINT_STEP"
 
-SAMPLING_STEPS=(5 10 20 30 50)
+# SAMPLING_STEPS=(5 10 20 30 50)
+SAMPLING_STEPS=(100 250)
 CFG_SCALES=(0.0)
 # SAMPLING_MODES=("DDIM" "iDDPM" "DDIM_diff_noise" "iDDPM_diff_noise")
 SAMPLING_MODES=("DDIM_diff_noise" "iDDPM_diff_noise")

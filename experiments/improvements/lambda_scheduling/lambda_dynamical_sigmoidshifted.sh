@@ -2,8 +2,9 @@
 #SBATCH --job-name=dnwfb___
 #SBATCH --partition=gpu_lowp  # Specify the partition name
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:h100:1               # Number of GPUs per node
+#SBATCH --ntasks-per-node=6
+#SBATCH --cpus-per-task=6
+#SBATCH --gres=gpu:h100:6               # Number of GPUs per node
 #SBATCH --mem=48G                  # Adjust based on your needs
 #SBATCH --time=48:00:00            # Adjust based on your needs
 #SBATCH --output=/nfs/ghome/live/martorellat/guided-diffusion/logs/%j/log.out
@@ -45,7 +46,7 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="AAAdistributional_lambda_dynamical_sigmoid_shifted"
+export EXPERIMENT_NAME="BBB_distributional_lambda_dynamical_sigmoid_shifted"
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/blobs_$EXPERIMENT_NAME"

@@ -45,7 +45,7 @@ done
 export WANDB_KEY="71b54366f0dcf364f47a59ed91fd5e5db58a0928"
 export ENTITY="tommaso_research"
 export PROJECT="sit_training"
-export EXPERIMENT_NAME="FINAL_distributional_base_dispersion_last_layer_instead_of_interaction"
+export EXPERIMENT_NAME="BBB_distributional_base_dispersion_last_layer_instead_of_interaction"
 
 export OPENAI_LOGDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/logs_$EXPERIMENT_NAME"
 export OPENAI_BLOBDIR="/ceph/scratch/martorellat/guided_diffusion/improvements/blobs_$EXPERIMENT_NAME"
@@ -68,7 +68,7 @@ if [ "$LOCAL_MODE" = true ]; then
         --class_cond True \
         --learn_sigma True \
         --lr 5e-5 \
-        --batch_size 128 \
+        --batch_size 32 \
         --dropout 0.3 \
         --diffusion_steps 4000 \
         --noise_schedule cosine \
